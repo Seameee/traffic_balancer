@@ -44,7 +44,6 @@ readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
 # 下载 URL 列表 (硬编码，不可修改顺序)
 # ============================================
 DOWNLOAD_URLS=(
-    "https://mirrors.aliyun.com/deepin-cd/20.9/deepin-desktop-community-20.9-amd64.iso"
     "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe"
     "http://speedtest.tele2.net/10MB.zip"
     "http://speedtest.tele2.net/100MB.zip"
@@ -826,16 +825,25 @@ acquire_script_lock() {
 # 输出: 无
 # ============================================
 release_all_locks() {
-    # 杀死 curl 子进程 (如果有)
+    # 取消所有 trap，避免 Ctrl+C 时 exit 触发 EXIT trap 导致重复执行
+    trap - EXIT INT TERM
+    # 杀死 curl 子进程 (如果有) - 使用 TERM 信号确保 curl 能收到终止请求
     if [ -f "${CURL_PIDFILE}" ]; then
         local curl_pid
         curl_pid=$(cat "${CURL_PIDFILE}" 2>/dev/null)
-        if [ -n "${curl_pid}" ]; then
-            kill "${curl_pid}" 2>/dev/null || true
+        if [ -n "${curl_pid}" ] && kill -0 "${curl_pid}" 2>/dev/null; then
+            kill -TERM "${curl_pid}" 2>/dev/null || true
+            # 等待最多 2 秒让 curl 优雅退出
+            local waited=0
+            while kill -0 "${curl_pid}" 2>/dev/null && [ ${waited} -lt 20 ]; do
+                sleep 0.1
+                waited=$((waited + 1))
+            done
+            # 强制 kill 如果还没退出
+            kill -0 "${curl_pid}" 2>/dev/null && kill -KILL "${curl_pid}" 2>/dev/null || true
         fi
-        rm -f "${CURL_PIDFILE}"
+        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
     fi
-    rm -f "${CURL_PIDFILE}.stat"
     rm -f "${SCRIPT_PIDFILE}"
     log INFO "已清理所有锁，退出脚本"
     exit 0
@@ -875,22 +883,15 @@ start_curl_download() {
     dir=$(dirname "${CURL_PIDFILE}")
     mkdir -p "${dir}" 2>/dev/null || true
 
-    # 使用临时文件存储 curl 统计信息
-    local stat_file
-    stat_file="${dir}/curl_stat_$$"
-
-    (
-        curl -L --limit-rate "${LIMIT_RATE}" \
-             --connect-timeout "${CONNECT_TIMEOUT}" \
-             --max-time "${MAX_DOWNLOAD_TIME}" \
-             -o /dev/null -s -w "http_code=%{http_code} size=%{size_download} time=%{time_total}" \
-             "${url}" > "${stat_file}" 2>/dev/null
-        echo " exit_code=$?" >> "${stat_file}"
-    ) &
-
+    # 直接启动 curl，不使用 subshell，确保 kill 能正确终止 curl
+    # 使用 nohup 忽略 SIGHUP，让 curl 在后台持续运行
+    nohup curl -L --limit-rate "${LIMIT_RATE}" \
+         --connect-timeout "${CONNECT_TIMEOUT}" \
+         --max-time "${MAX_DOWNLOAD_TIME}" \
+         -o /dev/null -s -w "http_code=%{http_code} size=%{size_download} time=%{time_total}" \
+         "${url}" > "${CURL_PIDFILE}.out" 2>&1 &
     local pid=$!
     echo "${pid}" > "${CURL_PIDFILE}"
-    echo "${stat_file}" > "${CURL_PIDFILE}.stat"
 }
 
 # ============================================
@@ -901,7 +902,7 @@ start_curl_download() {
 # ============================================
 traffic_balance() {
     local idx url
-    idx=$((RANDOM % 6))
+    idx=$((RANDOM % ${#DOWNLOAD_URLS[@]}))
     url="${DOWNLOAD_URLS[${idx}]}"
 
     log INFO "开始流量平衡下载: ${url}"
@@ -927,43 +928,39 @@ check_download_status() {
     local curl_pid
     curl_pid=$(cat "${CURL_PIDFILE}" 2>/dev/null)
     if [ -z "${curl_pid}" ]; then
-        rm -f "${CURL_PIDFILE}"
+        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
         return
     fi
 
-    # 检查进程是否仍在运行
+    # 检查 curl 进程是否仍在运行
     if kill -0 "${curl_pid}" 2>/dev/null; then
         return  # 仍在运行
     fi
 
-    # 进程已结束，获取退出码和统计信息
-    local stat_file
-    stat_file="${CURL_PIDFILE}.stat"
-    local stat=""
-    local exit_code=1
+    # curl 进程已结束，读取结果
+    local exit_code=0
+    local http_code="0"
+    local size="0"
+    local time_total="0"
 
-    if [ -f "${stat_file}" ]; then
-        stat=$(cat "${stat_file}" 2>/dev/null)
-        # 提取退出码
-        exit_code=$(echo "${stat}" | sed -n 's/.*exit_code=\([0-9]*\).*/\1/p')
-        [ -z "${exit_code}" ] && exit_code=1
+    if [ -f "${CURL_PIDFILE}.out" ]; then
+        # 从 nohup 的输出文件解析 curl -w 输出
+        # 格式: http_code=XXX size=XXX time=XXX
+        http_code=$(grep -oP 'http_code=\K[0-9]+' "${CURL_PIDFILE}.out" 2>/dev/null || echo "0")
+        size=$(grep -oP 'size=\K[0-9]+' "${CURL_PIDFILE}.out" 2>/dev/null || echo "0")
+        time_total=$(grep -oP 'time=\K[0-9.]+' "${CURL_PIDFILE}.out" 2>/dev/null || echo "0")
     fi
 
-    # 解析 HTTP 状态码和下载大小 (避免 grep -P，使用 sed)
-    local http_code size
-    http_code=$(echo "${stat}" | sed -n 's/.*http_code=\([0-9]*\).*/\1/p')
-    size=$(echo "${stat}" | sed -n 's/.*size=\([0-9]*\).*/\1/p')
-    [ -z "${http_code}" ] && http_code="0"
-    [ -z "${size}" ] && size="0"
-
-    if [ "${exit_code}" -eq 0 ] && [ -n "${http_code}" ] && { [ "${http_code:0:1}" = "2" ] || [ "${http_code:0:1}" = "3" ]; }; then
+    # curl 进程退出码在 wait 中获取，但 nohup curl 退出码无法直接获取
+    # 通过 HTTP 状态码判断成功/失败
+    if [ -n "${http_code}" ] && [ "${http_code}" -ge 200 ] && [ "${http_code}" -lt 400 ]; then
         log INFO "下载完成 - HTTP ${http_code}, 下载量 $(human_bytes "${size}")"
     else
-        log ERROR "下载失败 - HTTP ${http_code}, 退出码 ${exit_code}"
+        log ERROR "下载失败 - HTTP ${http_code}, 退出码未知"
     fi
 
     # 清理
-    rm -f "${CURL_PIDFILE}" "${stat_file}"
+    rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
 }
 
 # ============================================
