@@ -1309,10 +1309,12 @@ EOF
 description="Traffic Balance Monitor"
 command="/usr/local/bin/traffic_balance.sh"
 command_args="${args_str}"
-# command_background=false: 让 OpenRC 直接管理进程，不后台化
-# OpenRC 会监控此进程的 PID，正确处理 start/stop/restart
-command_background=false
+# command_background=true: OpenRC 在后台启动进程，监控其 PID 文件
+command_background=true
 pidfile="/var/run/traffic_balance.pid"
+# respawn: 进程异常退出时自动重启
+respawn_threshold="5"
+respawn_delay="10"
 EOF
 
             chmod +x /etc/init.d/traffic-balance
