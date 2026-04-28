@@ -39,6 +39,8 @@ MAX_DOWNLOAD_TIME=7200
 # Telegram 配置 (空值表示禁用)
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ALLOWED_USER_ID=""
+# Telegram 代理 (留空则直连，如 socks5://user:pass@host:port)
+TG_PROXY=""
 
 # 日志文件轮转阈值 (10 MiB)
 readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
@@ -983,6 +985,7 @@ send_telegram_message() {
                    echo "${text}" | sed 's/ /%20/g;s/\n/%0A/g')
 
     curl -s --connect-timeout 10 --max-time 15 \
+        ${TELEGRAM_PROXY_ARG} \
         -X POST "${API_BASE}/sendMessage" \
         -d "chat_id=${chat_id}&text=${encoded_text}" \
         -o /dev/null 2>/dev/null || true
@@ -1141,6 +1144,7 @@ poll_telegram() {
     local response
 
     response=$(curl -s --connect-timeout 10 --max-time "$((TG_POLL_INTERVAL + 5))" \
+        ${TELEGRAM_PROXY_ARG} \
         "${API_BASE}/getUpdates?offset=${offset}&timeout=${TG_POLL_INTERVAL}" 2>/dev/null) || true
 
     if [ -z "${response}" ]; then
@@ -1667,11 +1671,16 @@ load_config() {
 setup_telegram() {
     TELEGRAM_ENABLED=false
     API_BASE=""
+    TELEGRAM_PROXY_ARG=""
 
     if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_ALLOWED_USER_ID}" ]; then
         if echo "${TELEGRAM_BOT_TOKEN}" | grep -qE '^[0-9]{8,10}:[A-Za-z0-9_-]{35,}$'; then
             TELEGRAM_ENABLED=true
             API_BASE="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
+            # 构建代理参数 (如 TG_PROXY="socks5://user:pass@host:port")
+            if [ -n "${TG_PROXY}" ]; then
+                TELEGRAM_PROXY_ARG="-x ${TG_PROXY}"
+            fi
             log INFO "Telegram 通知已启用"
         else
             log WARN "Telegram Bot Token 格式不合法，跳过 Telegram 功能"

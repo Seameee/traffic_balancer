@@ -178,6 +178,7 @@ TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
 TELEGRAM_ALLOWED_USER_ID="123456789"
 RESET_DAY=15
 LIMIT_RATE="1M"
+# TG_PROXY="socks5://user:pass@host:port"
 EOF
 ```
 
@@ -239,6 +240,8 @@ curl下载: 空闲
 # --- Telegram (可选) ---
 TELEGRAM_BOT_TOKEN="1234567890:ABCdef..."
 TELEGRAM_ALLOWED_USER_ID="123456789"
+# Telegram 代理 (留空则直连，支持 socks5:// 或 http://)
+# TG_PROXY="socks5://user:pass@host:port"
 
 # --- 结算日 (1-31) ---
 RESET_DAY=1
