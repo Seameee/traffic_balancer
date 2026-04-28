@@ -17,6 +17,14 @@
 
 ---
 
+## 一键运行并安装为服务（推荐）
+
+```bash
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --install-service
+```
+
+---
+
 ## 快速开始
 
 ### 1. 前置要求
@@ -53,7 +61,7 @@ chmod +x traffic_balance.sh
 ### 3. 自检测试
 
 ```bash
-./traffic_balance.sh --self-test
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --self-test
 ```
 
 输出示例：
@@ -99,20 +107,23 @@ Traffic Balance 自检测试
 
 ```bash
 # 使用默认配置运行
-sudo ./traffic_balance.sh
+curl -sL https://ba.sh/5bPQ -o- | bash -s --
 
 # 指定结算日为每月 15 日，下载限速 2MB/s
-sudo ./traffic_balance.sh -d 15 -l 2M
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- -d 15 -l 2M
 
 # 手动指定网卡
-sudo ./traffic_balance.sh -i eth0
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- -i eth0
 ```
 
-### 5. 安装为系统服务（推荐）
+### 5. 安装为系统服务
 
 ```bash
+# 安装服务
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --install-service
+
 # 安装并设置结算日为每月 15 日
-sudo ./traffic_balance.sh --install-service -d 15
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --install-service -d 15
 
 # 脚本将自动完成：
 #   1. 安装依赖 (vnstat, curl, jq)
@@ -126,7 +137,7 @@ sudo ./traffic_balance.sh --install-service -d 15
 ### 6. 卸载服务
 
 ```bash
-sudo ./traffic_balance.sh --uninstall-service
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --uninstall-service
 ```
 
 ---
@@ -288,7 +299,7 @@ TG_POLL_INTERVAL=5
 |------|----------|
 | `env: 'bash\r': No such file or directory` | 转换行尾：`dos2unix traffic_balance.sh` 或 `sed -i 's/\r$//' traffic_balance.sh` |
 | `vnstat: Permission denied` | 确保 vnstatd 已启动：`sudo systemctl start vnstat` |
-| `无法检测到外网网卡` | 手动指定：`./traffic_balance.sh -i eth0` |
+| `无法检测到外网网卡` | 手动指定：`curl -sL https://ba.sh/5bPQ -o- | bash -s -- -i eth0` |
 | `依赖安装失败` | 手动安装：`sudo apt install vnstat curl jq` |
 | `非 root 运行，服务安装等功能受限` | 使用 sudo 或切换到 root 用户 |
 
@@ -321,10 +332,7 @@ sudo tail -f /var/log/traffic_balance.log
 
 ```bash
 # 停止并卸载服务
-sudo ./traffic_balance.sh --uninstall-service
-
-# 清理配置（可选）
-rm -rf ~/.config/traffic_balance
+curl -sL https://ba.sh/5bPQ -o- | bash -s -- --uninstall-service
 ```
 
 ---

@@ -1250,6 +1250,16 @@ install_service() {
     # 复制脚本到 /usr/local/bin
     local script_src
     script_src="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+    # 如果 $0 不是有效文件（管道执行方式：curl | bash -s --），
+    # 则从 stdin 读取脚本内容保存到临时文件
+    if [ ! -f "${script_src}" ]; then
+        log INFO "检测到管道执行方式，从 stdin 保存脚本..."
+        script_src=$(mktemp)
+        cat > "${script_src}"
+        chmod +x "${script_src}"
+    fi
+
     cp "${script_src}" /usr/local/bin/traffic_balance.sh
     chmod +x /usr/local/bin/traffic_balance.sh
     log INFO "脚本已复制到 /usr/local/bin/traffic_balance.sh"
