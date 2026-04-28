@@ -418,14 +418,14 @@ parse_vnstat_json() {
 
     # 方法 2: python3
     if command -v python3 >/dev/null 2>&1; then
-        # 使用更安全的方式: 直接传递原始 json 和查询，让 python 处理
+        # 使用更安全的方式: 直接传递原始 json，让 python 处理
         python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-# 简化解析: 支持 interfaces[0].traffic.months 和 interfaces[0].traffic.days
+# vnstat JSON 字段是单数: month 和 day
 iface = data['interfaces'][0]
-months = iface['traffic'].get('months', [])
-days = iface['traffic'].get('days', [])
+months = iface['traffic'].get('month', [])
+days = iface['traffic'].get('day', [])
 print(json.dumps({'months': months, 'days': days}))
 " <<< "${json}" 2>/dev/null | \
         python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d))" 2>/dev/null
@@ -498,10 +498,10 @@ get_traffic_data() {
             # 用 jq 直接提取年月 RX TX，若任一字段为 null 则输出 null
             local month_result
             month_result=$(echo "${json_data}" | jq -r '[
-                .interfaces[0].traffic.months[-1].date.year,
-                .interfaces[0].traffic.months[-1].date.month,
-                .interfaces[0].traffic.months[-1].rx,
-                .interfaces[0].traffic.months[-1].tx
+                .interfaces[0].traffic.month[-1].date.year,
+                .interfaces[0].traffic.month[-1].date.month,
+                .interfaces[0].traffic.month[-1].rx,
+                .interfaces[0].traffic.month[-1].tx
             ] | if .[0] == null or .[1] == null or .[2] == null then null else . end | @tsv' 2>/dev/null)
 
             if [ -n "${month_result}" ] && [ "${month_result}" != "null" ]; then
@@ -575,7 +575,7 @@ get_traffic_data() {
                 tx=$((tx + d_tx))
                 day_count=$((day_count + 1))
             fi
-        done < <(echo "${json_data}" | jq -r '.interfaces[0].traffic.days[] | [.date.year, .date.month, .date.day, .rx, .tx] | @tsv' 2>/dev/null)
+        done < <(echo "${json_data}" | jq -r '.interfaces[0].traffic.day[] | [.date.year, .date.month, .date.day, .rx, .tx] | @tsv' 2>/dev/null)
 
         if [ ${day_count} -eq 0 ]; then
             log WARN "vnstat 日数据数组为空或无匹配日期"
@@ -586,9 +586,6 @@ get_traffic_data() {
             echo "-1 -1"
             return 1
         fi
-
-        # jq 不可用或月度数据不匹配，fallback 到日数据累加
-        log WARN "月度数据不可用，fallback 到日数据累加"
     fi
 
     # 情况 2: 日数据累加 (所有情况)
@@ -632,7 +629,7 @@ get_traffic_data() {
                 tx=$((tx + d_tx))
                 day_count=$((day_count + 1))
             fi
-        done < <(echo "${json_data}" | jq -c '.interfaces[0].traffic.days[]?' 2>/dev/null)
+        done < <(echo "${json_data}" | jq -c '.interfaces[0].traffic.day[]?' 2>/dev/null)
 
         if [ ${day_count} -eq 0 ]; then
             log WARN "vnstat 日数据数组为空或无匹配日期"
@@ -650,7 +647,7 @@ get_traffic_data() {
             result=$(python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-days = data['interfaces'][0]['traffic'].get('days', [])
+days = data['interfaces'][0]['traffic'].get('day', [])
 rx = 0
 tx = 0
 for day in days:
@@ -675,7 +672,7 @@ print(f'{rx} {tx}')
             result=$(python2 -c "
 import sys, json
 data = json.load(sys.stdin)
-days = data['interfaces'][0]['traffic'].get('days', [])
+days = data['interfaces'][0]['traffic'].get('day', [])
 rx = 0
 tx = 0
 for day in days:
