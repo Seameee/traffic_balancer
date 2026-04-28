@@ -1309,7 +1309,9 @@ EOF
 description="Traffic Balance Monitor"
 command="/usr/local/bin/traffic_balance.sh"
 command_args="${args_str}"
-command_background=true
+# command_background=false: 让 OpenRC 直接管理进程，不后台化
+# OpenRC 会监控此进程的 PID，正确处理 start/stop/restart
+command_background=false
 pidfile="/var/run/traffic_balance.pid"
 EOF
 
