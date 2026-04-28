@@ -1,13 +1,13 @@
 # Traffic Balance Monitor
 
-跨平台服务器流量监控与自动平衡脚本。基于 **vnstat** 监控月度 RX/TX 流量比例，当比例 <= 2 时自动下载文件平衡流量，支持 **Telegram** 远程查询，可安装为 **systemd/OpenRC/SysV** 持久化服务。
+跨平台服务器流量监控与自动平衡脚本。基于 **vnstat** 监控月度 RX/TX 流量比例，当比例 <= 2 时自动后台下载文件平衡流量，支持 **Telegram** 远程查询，可安装为 **systemd/OpenRC/SysV** 持久化服务。
 
 ---
 
 ## 功能特性
 
 - **流量监控**: 基于 vnstat 的月度 RX/TX 比例计算，支持自定义结算日
-- **自动平衡**: 比例 <= 2 时自动后台下载文件（从 6 个内置 URL 随机选取）
+- **自动平衡**: 比例 <= 2 时自动后台下载文件（从 42 个内置 URL 随机选取）
 - **Telegram 机器人**: `/traffic` 命令远程查询当前流量状态
 - **跨平台兼容**: Debian/Ubuntu, RHEL/CentOS/Fedora, Alpine, Arch, openSUSE
 - **多架构支持**: amd64, arm64, armv7l, i386
@@ -19,7 +19,7 @@
 
 ## 快速开始
 
-### 前置要求
+### 1. 前置要求
 
 ```bash
 # Debian/Ubuntu
@@ -170,18 +170,18 @@ sudo rc-service traffic-balance restart   # OpenRC
 
 ```
 [流量报告] my-server
-时间: 2026-04-28 08:48:24
+时间: 2026-04-28 10:24:21
 网卡: eth0
-结算周期: 2026-04-15 ~ 2026-04-28
+结算周期: 2026-04-01 ~ 2026-04-28
 ----------------------------
-下载(RX): 12.34 GiB
-上传(TX): 3.21 GiB
-RX/TX比例: 3.84
+下载(RX): 150.41 GiB
+上传(TX): 13.02 GiB
+RX/TX比例: 11.56
 ----------------------------
 状态: 监控中
-脚本PID: 1234
+脚本PID: 16038
 curl下载: 空闲
-上次检查: 2026-04-28 08:48:24
+上次检查: 2026-04-28 10:24:21
 ```
 
 ---
@@ -254,18 +254,7 @@ TG_POLL_INTERVAL=5
 
 ### 平衡下载
 
-从 6 个内置 URL 中随机选取一个，后台启动 curl 下载：
-
-```bash
-DOWNLOAD_URLS=(
-    "https://mirrors.aliyun.com/deepin-cd/20.9/deepin-desktop-community-20.9-amd64.iso"
-    "https://qiniu-download-public.dcloud.net.cn/HBuilderX/HBuilderX.3.6.4.20220922.zip"
-    "https://wdl1.cache.wps.cn/wps/download/w.exe"
-    "https://dldir1.qq.com/qqfile/qq/PCQQ9.7.1/QQ9.7.1.28934.exe"
-    "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe"
-    "https://vscode.cdn.azure.cn/stable/e8a3071ea4344d9d48ef8a4df2c097372b0c5161/VSCodeUserSetup-x64-1.74.2.exe"
-)
-```
+从 42 个内置 URL 中随机选取一个，后台启动 curl 下载。支持全球多个测速服务器，覆盖亚洲、欧洲、北美等地区。
 
 ---
 
@@ -281,10 +270,10 @@ DOWNLOAD_URLS=(
 日志示例：
 
 ```
-[2026-04-28 08:00:01] [INFO] 主循环启动 - 网卡: eth0, 结算日: 15, 检查间隔: 60s
-[2026-04-28 08:01:02] [INFO] 流量比例 1.85 <= 2.0，触发流量平衡
-[2026-04-28 08:01:02] [INFO] 开始流量平衡下载: https://...
-[2026-04-28 08:15:30] [INFO] 下载完成 - HTTP 200, 下载量 1.23 GiB
+[2026-04-28 10:24:21] [INFO] 主循环启动 - 网卡: eth0, 结算日: 1, 检查间隔: 60s
+[2026-04-28 10:24:21] [INFO] 流量比例 1.11 <= 2.0，触发流量平衡
+[2026-04-28 10:24:21] [INFO] 开始流量平衡下载: http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin
+[2026-04-28 10:24:52] [ERROR] 下载失败 - HTTP 0, 退出码未知
 ```
 
 日志超过 10MB 时自动轮转，旧日志保存为 `.old` 文件。
@@ -297,6 +286,7 @@ DOWNLOAD_URLS=(
 
 | 问题 | 解决方案 |
 |------|----------|
+| `env: 'bash\r': No such file or directory` | 转换行尾：`dos2unix traffic_balance.sh` 或 `sed -i 's/\r$//' traffic_balance.sh` |
 | `vnstat: Permission denied` | 确保 vnstatd 已启动：`sudo systemctl start vnstat` |
 | `无法检测到外网网卡` | 手动指定：`./traffic_balance.sh -i eth0` |
 | `依赖安装失败` | 手动安装：`sudo apt install vnstat curl jq` |
@@ -345,13 +335,16 @@ rm -rf ~/.config/traffic_balance
 A: 许多云服务商以 RX（入站）流量计费，TX（出站）流量免费或低价。当 TX 相对较小时，增加 RX 可优化成本。
 
 **Q: 下载会消耗多少流量？**
-A: 取决于你的限速（默认 1M/s）和 `MAX_DOWNLOAD_TIME`（默认 7200 秒 = 2 小时）。最大约 26GB。
+A: 取决于你的限速（默认 1MB/s）和 `MAX_DOWNLOAD_TIME`（默认 7200 秒 = 2 小时）。最大约 26GB。
 
 **Q: 可以同时运行多个实例吗？**
 A: 不可以，脚本使用 PID 文件锁确保单实例运行。
 
 **Q: 如何修改下载 URL？**
 A: 直接编辑脚本中的 `DOWNLOAD_URLS` 数组。URL 顺序不可改变。
+
+**Q: Ctrl+C 无法终止 curl 下载？**
+A: 已修复，使用 `nohup curl &` 确保子进程可被正确终止。
 
 ---
 
