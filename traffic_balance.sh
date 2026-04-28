@@ -489,26 +489,34 @@ get_traffic_data() {
             return 1
         fi
 
-        # 使用 jq 获取最后一个月的数据
+        # 使用 jq 获取最后一个月的数据 (单次调用，避免多次管道导致数据丢失)
         if command -v jq >/dev/null 2>&1; then
             local cur_year cur_month
             cur_year=$(date '+%Y')
             cur_month=$(date '+%m')
-            cur_month=$((10#${cur_month}))
 
-            local month_data
-            month_data=$(echo "${json_data}" | jq -r '.interfaces[0].traffic.months[-1] // empty' 2>/dev/null)
+            # 用 jq 直接提取年月 RX TX，若任一字段为 null 则输出 null
+            local month_result
+            month_result=$(echo "${json_data}" | jq -r '[
+                .interfaces[0].traffic.months[-1].date.year,
+                .interfaces[0].traffic.months[-1].date.month,
+                .interfaces[0].traffic.months[-1].rx,
+                .interfaces[0].traffic.months[-1].tx
+            ] | if .[0] == null or .[1] == null or .[2] == null then null else . end | @tsv' 2>/dev/null)
 
-            if [ -n "${month_data}" ]; then
+            if [ -n "${month_result}" ] && [ "${month_result}" != "null" ]; then
                 local m_year m_month
-                m_year=$(echo "${month_data}" | jq -r '.date.year // empty' 2>/dev/null)
-                m_month=$(echo "${month_data}" | jq -r '.date.month // empty' 2>/dev/null)
+                m_year=$(echo "${month_result}" | cut -f1)
+                m_month=$(echo "${month_result}" | cut -f2)
+                rx=$(echo "${month_result}" | cut -f3)
+                tx=$(echo "${month_result}" | cut -f4)
+
+                # 去除前导零进行数值比较
+                m_year=$((10#${m_year}))
                 m_month=$((10#${m_month}))
+                cur_month=$((10#${cur_month}))
 
-                if [ "${m_year}" = "${cur_year}" ] && [ "${m_month}" -eq "${cur_month}" ]; then
-                    rx=$(echo "${month_data}" | jq -r '.rx // 0' 2>/dev/null)
-                    tx=$(echo "${month_data}" | jq -r '.tx // 0' 2>/dev/null)
-
+                if [ "${m_year}" -eq "${cur_year}" ] && [ "${m_month}" -eq "${cur_month}" ]; then
                     # 更新缓存
                     CACHED_RX="${rx}"
                     CACHED_TX="${tx}"
@@ -516,6 +524,67 @@ get_traffic_data() {
                     return 0
                 fi
             fi
+        fi
+
+        # jq 不可用或月度数据不匹配，fallback 到日数据累加
+        log WARN "月度数据不可用，fallback 到日数据累加"
+    fi
+
+    # 情况 2: 日数据累加 (所有情况)
+    json_data=$(timeout "${vnstat_timeout}" vnstat --json d 2>/dev/null) || true
+
+    if [ -z "${json_data}" ]; then
+        log WARN "vnstat 日数据返回空"
+        if [ -n "${CACHED_RX}" ] && [ -n "${CACHED_TX}" ]; then
+            echo "${CACHED_RX} ${CACHED_TX}"
+            return 0
+        fi
+        echo "-1 -1"
+        return 1
+    fi
+
+    # 解析日数据并累加
+    if command -v jq >/dev/null 2>&1; then
+        # 使用进程替换替代管道 subshell，避免数据丢失
+        # jq 输出 tab 分隔的 year month day rx tx，由 bash 做日期过滤
+        local day_count=0
+        while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+            # line 格式 (tab 分隔): year month day rx tx
+            local d_year d_month d_day d_rx d_tx
+            d_year=$(echo "${line}" | cut -f1)
+            d_month=$(echo "${line}" | cut -f2)
+            d_day=$(echo "${line}" | cut -f3)
+            d_rx=$(echo "${line}" | cut -f4)
+            d_tx=$(echo "${line}" | cut -f5)
+
+            [ -z "${d_year}" ] || [ -z "${d_month}" ] || [ -z "${d_day}" ] && continue
+
+            # 去除前导零 (bash 会将 "04" 当作八进制，所以用 10# 前缀)
+            d_year=$((10#${d_year}))
+            d_month=$((10#${d_month}))
+            d_day=$((10#${d_day}))
+
+            # 构造 YYYY-MM-DD 格式日期字符串用于比较
+            local date_str
+            date_str=$(printf '%04d-%02d-%02d' ${d_year} ${d_month} ${d_day})
+
+            # 日期在结算周期内则累加
+            if [ ! "${date_str}" \< "${start_date}" ] && [ ! "${date_str}" \> "${end_date}" ]; then
+                rx=$((rx + d_rx))
+                tx=$((tx + d_tx))
+                day_count=$((day_count + 1))
+            fi
+        done < <(echo "${json_data}" | jq -r '.interfaces[0].traffic.days[] | [.date.year, .date.month, .date.day, .rx, .tx] | @tsv' 2>/dev/null)
+
+        if [ ${day_count} -eq 0 ]; then
+            log WARN "vnstat 日数据数组为空或无匹配日期"
+            if [ -n "${CACHED_RX}" ] && [ -n "${CACHED_TX}" ]; then
+                echo "${CACHED_RX} ${CACHED_TX}"
+                return 0
+            fi
+            echo "-1 -1"
+            return 1
         fi
 
         # jq 不可用或月度数据不匹配，fallback 到日数据累加
