@@ -467,12 +467,15 @@ get_traffic_data() {
     local json_data=""
     local vnstat_timeout=15
 
-    # 情况 1: 快速路径 - 结算日为 1 号且起始日期为当月 1 日
-    local start_day
-    start_day=$(echo "${start_date}" | cut -d'-' -f3)
-    start_day=$((10#${start_day}))  # 去除前导零
+    # 情况 1: 快速路径 - 结算日为 1 号且当前是当月 (start_date 月 = 当月)
+    local start_month
+    start_month=$(echo "${start_date}" | cut -d'-' -f2)
+    start_month=$((10#${start_month}))
+    local cur_month
+    cur_month=$(date '+%m')
+    cur_month=$((10#${cur_month}))
 
-    if [ "${RESET_DAY}" -eq 1 ] && [ "${start_day}" -eq 1 ]; then
+    if [ "${RESET_DAY}" -eq 1 ] && [ "${start_month}" -eq "${cur_month}" ]; then
         # 使用 vnstat --json m 获取月度数据
         json_data=$(timeout "${vnstat_timeout}" vnstat --json m 2>/dev/null) || true
 
@@ -534,19 +537,9 @@ get_traffic_data() {
 
     # 解析日数据并累加
     if command -v jq >/dev/null 2>&1; then
-        local days_array
-        days_array=$(echo "${json_data}" | jq -c '.interfaces[0].traffic.days[]?' 2>/dev/null)
-
-        if [ -z "${days_array}" ]; then
-            log WARN "vnstat 日数据数组为空"
-            if [ -n "${CACHED_RX}" ] && [ -n "${CACHED_TX}" ]; then
-                echo "${CACHED_RX} ${CACHED_TX}"
-                return 0
-            fi
-            echo "-1 -1"
-            return 1
-        fi
-
+        # 使用进程替换替代管道 subshell，避免数据丢失
+        # jq -c 输出每行一个 JSON 对象，直接通过 process substitution 传给 while 循环
+        local day_count=0
         while IFS= read -r day_entry; do
             [ -z "${day_entry}" ] && continue
 
@@ -568,8 +561,19 @@ get_traffic_data() {
                 d_tx=$(echo "${day_entry}" | jq -r '.tx // 0' 2>/dev/null)
                 rx=$((rx + d_rx))
                 tx=$((tx + d_tx))
+                day_count=$((day_count + 1))
             fi
-        done <<< "${days_array}"
+        done < <(echo "${json_data}" | jq -c '.interfaces[0].traffic.days[]?' 2>/dev/null)
+
+        if [ ${day_count} -eq 0 ]; then
+            log WARN "vnstat 日数据数组为空或无匹配日期"
+            if [ -n "${CACHED_RX}" ] && [ -n "${CACHED_TX}" ]; then
+                echo "${CACHED_RX} ${CACHED_TX}"
+                return 0
+            fi
+            echo "-1 -1"
+            return 1
+        fi
     else
         # python3 fallback 解析
         if command -v python3 >/dev/null 2>&1; then
@@ -723,8 +727,10 @@ release_all_locks() {
         fi
         rm -f "${CURL_PIDFILE}"
     fi
+    rm -f "${CURL_PIDFILE}.stat"
     rm -f "${SCRIPT_PIDFILE}"
-    log INFO "已清理所有锁"
+    log INFO "已清理所有锁，退出脚本"
+    exit 0
 }
 
 # 注册退出清理
