@@ -109,6 +109,7 @@ CACHED_TX=""
 # ============================================
 TELEGRAM_ENABLED=false
 API_BASE=""
+TELEGRAM_PROXY_ARG=""
 LAST_UPDATE_ID=0
 
 # ============================================
@@ -978,17 +979,91 @@ send_telegram_message() {
     local chat_id="$1"
     local text="$2"
 
-    # URL 编码 (优先 python，fallback 到 sed)
-    local encoded_text
-    encoded_text=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${text}'''))" 2>/dev/null || \
-                   python2 -c "import urllib; print(urllib.quote('''${text}'''))" 2>/dev/null || \
-                   echo "${text}" | sed 's/ /%20/g;s/\n/%0A/g')
+    [ -z "${chat_id}" ] && return
 
     curl -s --connect-timeout 10 --max-time 15 \
         ${TELEGRAM_PROXY_ARG} \
         -X POST "${API_BASE}/sendMessage" \
-        -d "chat_id=${chat_id}&text=${encoded_text}" \
+        -d "chat_id=${chat_id}" \
+        --data-urlencode "text=${text}" \
         -o /dev/null 2>/dev/null || true
+}
+
+# ============================================
+# 函数: telegram_latest_update_id
+# 说明: 从 Telegram getUpdates 响应中提取最大的 update_id
+# 参数: $1 = API 响应 JSON
+# 输出: 最大 update_id，未找到则为空
+# ============================================
+telegram_latest_update_id() {
+    local response="$1"
+
+    if command -v jq >/dev/null 2>&1; then
+        echo "${response}" | jq -r '[.result[]?.update_id] | max // empty' 2>/dev/null
+        return
+    fi
+
+    local python_bin=""
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python2 >/dev/null 2>&1; then
+        python_bin="python2"
+    fi
+
+    [ -z "${python_bin}" ] && return
+
+    "${python_bin}" -c '
+import json
+import sys
+
+try:
+    response = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+try:
+    number_types = (int, long)
+except NameError:
+    number_types = (int,)
+
+ids = []
+for update in response.get("result", []):
+    update_id = update.get("update_id")
+    if isinstance(update_id, number_types):
+        ids.append(update_id)
+
+if ids:
+    print(max(ids))
+' <<< "${response}" 2>/dev/null
+}
+
+# ============================================
+# 函数: init_telegram_offset
+# 说明: 启动时跳过历史 Telegram updates，避免重启后补发旧 /traffic 回复
+# 参数: 无
+# 输出: 无
+# ============================================
+init_telegram_offset() {
+    LAST_UPDATE_ID=0
+
+    local response latest_id
+    response=$(curl -s --connect-timeout 10 --max-time 15 \
+        ${TELEGRAM_PROXY_ARG} \
+        "${API_BASE}/getUpdates?offset=-1&timeout=0" 2>/dev/null) || true
+
+    if [ -z "${response}" ]; then
+        return
+    fi
+
+    if ! echo "${response}" | grep -q '"ok":true'; then
+        return
+    fi
+
+    latest_id=$(telegram_latest_update_id "${response}")
+    if [ -n "${latest_id}" ]; then
+        LAST_UPDATE_ID="${latest_id}"
+        log INFO "Telegram offset 已初始化到 update_id ${LAST_UPDATE_ID}，跳过启动前历史消息"
+    fi
 }
 
 # ============================================
@@ -1079,7 +1154,7 @@ parse_and_handle_updates() {
             update_id=$(echo "${update}" | jq -r '.update_id // empty' 2>/dev/null)
             [ -z "${update_id}" ] && continue
 
-            if [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
+            if echo "${update_id}" | grep -qE '^[0-9]+$' && [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
                 LAST_UPDATE_ID="${update_id}"
             fi
 
@@ -1104,32 +1179,61 @@ parse_and_handle_updates() {
             fi
         done <<< "${updates}"
     else
-        # python3 fallback
+        # python fallback
+        local python_bin=""
         if command -v python3 >/dev/null 2>&1; then
-            python3 -c "
-import sys, json
-response = json.load(sys.stdin)
-for update in response.get('result', []):
-    update_id = update.get('update_id', 0)
-    if update_id > ${LAST_UPDATE_ID}:
-        # 无法直接修改 shell 变量，改为输出新的 LAST_UPDATE_ID
-        pass
-    msg = update.get('message', {})
-    from_id = str(msg.get('from', {}).get('id', ''))
-    if from_id != '${TELEGRAM_ALLOWED_USER_ID}':
-        continue
-    text = msg.get('text', '').strip()
-    chat_id = msg.get('chat', {}).get('id', '')
-    if text.startswith('/traffic'):
-        print(f'CMD:traffic CHAT:{chat_id}')
-" <<< "${response}" 2>/dev/null | while IFS= read -r line; do
-                if echo "${line}" | grep -q '^CMD:traffic CHAT:'; then
-                    local cid
-                    cid="${line//CMD:traffic CHAT:/}"
-                    [ -n "${cid}" ] && send_traffic_report "${cid}"
-                fi
-            done
+            python_bin="python3"
+        elif command -v python2 >/dev/null 2>&1; then
+            python_bin="python2"
         fi
+
+        [ -z "${python_bin}" ] && return
+
+        local line update_id cid
+        while IFS= read -r line; do
+            case "${line}" in
+                UPDATE_ID:*)
+                    update_id="${line#UPDATE_ID:}"
+                    if echo "${update_id}" | grep -qE '^[0-9]+$' && [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
+                        LAST_UPDATE_ID="${update_id}"
+                    fi
+                    ;;
+                CMD:traffic\ CHAT:*)
+                    cid="${line#CMD:traffic CHAT:}"
+                    [ -n "${cid}" ] && send_traffic_report "${cid}"
+                    ;;
+            esac
+        done < <("${python_bin}" -c '
+import json
+import re
+import sys
+
+try:
+    response = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+allowed_user_id = sys.argv[1]
+try:
+    number_types = (int, long)
+except NameError:
+    number_types = (int,)
+
+for update in response.get("result", []):
+    update_id = update.get("update_id")
+    if isinstance(update_id, number_types):
+        print("UPDATE_ID:%s" % update_id)
+
+    msg = update.get("message") or {}
+    from_id = str((msg.get("from") or {}).get("id", ""))
+    if from_id != allowed_user_id:
+        continue
+
+    text = (msg.get("text") or "").strip()
+    chat_id = (msg.get("chat") or {}).get("id", "")
+    if re.match(r"^/traffic(@[A-Za-z0-9_]+)?$", text) and chat_id != "":
+        print("CMD:traffic CHAT:%s" % chat_id)
+' "${TELEGRAM_ALLOWED_USER_ID}" <<< "${response}" 2>/dev/null)
     fi
 }
 
@@ -1723,7 +1827,7 @@ main_loop() {
     setup_telegram
 
     if [ "${TELEGRAM_ENABLED}" = true ]; then
-        LAST_UPDATE_ID=0
+        init_telegram_offset
     fi
 
     # 初始化循环变量
