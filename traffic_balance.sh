@@ -30,15 +30,25 @@ readonly SCRIPT_VERSION="1.0.0"
 # 默认配置值 (会被配置文件和命令行参数覆盖)
 RESET_DAY=1
 INTERFACE=""
-LIMIT_RATE="1M"
+# 留空或 auto 时启用自适应限速；显式设置如 "1M" 时固定限速
+LIMIT_RATE=""
 CHECK_INTERVAL=60
 TG_POLL_INTERVAL=5
 CONNECT_TIMEOUT=30
 MAX_DOWNLOAD_TIME=7200
 
-# 流量平衡目标比例 (留空则动态计算: 低流量高比例，高流量低比例)
-# 设置固定值则关闭动态: 如 RATIO_THRESHOLD="4.0"
+# 流量平衡中心目标比例 (通常留空即可；默认目标 2.0，自动使用 1.8~2.2 滞回区间)
+# 设置后只调整中心目标，启动/停止区间由脚本自动推导，如 RATIO_THRESHOLD="1.8"
 RATIO_THRESHOLD=""
+readonly DEFAULT_BALANCE_TARGET_RATIO="2.0"
+readonly DEFAULT_BALANCE_START_RATIO="1.8"
+readonly DEFAULT_BALANCE_STOP_RATIO="2.2"
+readonly AUTO_LIMIT_RATE_LOW="2M"
+readonly AUTO_LIMIT_RATE_MEDIUM="1M"
+readonly AUTO_LIMIT_RATE_NORMAL="700K"
+readonly AUTO_LIMIT_RATE_NEAR_START="500K"
+readonly AUTO_LIMIT_RATE_NEAR_TARGET="300K"
+readonly AUTO_LIMIT_RATE_TOPUP="150K"
 
 # Telegram 配置 (空值表示禁用)
 TELEGRAM_BOT_TOKEN=""
@@ -57,68 +67,57 @@ readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
 # 下载 URL 列表 (硬编码，不可修改顺序)
 # ============================================
 DOWNLOAD_URLS=(
-    # --- 国内 Linux 镜像站 (Debian/系统相关，大陆可用) ---
-    # 清华 TUNA
-    "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
-    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
-    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
-    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.6.tar.xz"
-    "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/l/linux/linux-headers-6.1.0-32-amd64_6.1.129-1_amd64.deb"
-    "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/g/gcc-12/gcc-12_12.2.0-14_amd64.deb"
-    # 中科大 USTC
-    "https://mirrors.ustc.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.10.0-amd64-DVD-1.iso"
-    "https://mirrors.ustc.edu.cn/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
-    "https://mirrors.ustc.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
-    "https://mirrors.ustc.edu.cn/debian/pool/main/l/linux/linux-image-6.1.0-32-amd64_6.1.129-1_amd64.deb"
-    "https://mirrors.ustc.edu.cn/debian/pool/main/g/glibc/libc6_2.36-9+deb12u10_amd64.deb"
-    # 阿里云镜像
-    "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
-    "https://mirrors.aliyun.com/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
+    # Mainland China kernel mirror URLs verified from this server.
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.15.tar.xz"
     "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.12.tar.xz"
-    "https://mirrors.aliyun.com/debian/pool/main/l/linux/linux-image-6.1.0-31-amd64_6.1.128-1_amd64.deb"
-    "https://mirrors.aliyun.com/debian/pool/main/o/openssl/openssl_3.0.15-1~deb12u1_amd64.deb"
-    # 华为云镜像
-    "https://mirrors.huaweicloud.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
-    "https://mirrors.huaweicloud.com/kernel/v6.x/linux-6.12.tar.xz"
-    "https://mirrors.huaweicloud.com/debian/pool/main/n/nginx/nginx-full_1.22.1-9_amd64.deb"
-    # 腾讯云镜像
-    "https://mirrors.tencent.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
-    "https://mirrors.tencent.com/kernel/v6.x/linux-6.6.tar.xz"
-
-    # --- 常见开源软件发布 (Debian 运维常接触) ---
-    "https://go.dev/dl/go1.24.3.linux-amd64.tar.gz"
-    "https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-x64.tar.xz"
-    "https://github.com/containerd/containerd/releases/download/v2.1.0/containerd-2.1.0-linux-amd64.tar.gz"
-    "https://github.com/containernetworking/plugins/releases/download/v1.7.1/cni-plugins-linux-amd64-v1.7.1.tgz"
-    "https://get.docker.com/builds/Linux/x86_64/docker-28.0.4.tgz"
-    "https://github.com/kubernetes/kubernetes/releases/download/v1.32.3/kubernetes.tar.gz"
-    "https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.32.0/crictl-v1.32.0-linux-amd64.tar.gz"
-    "https://github.com/prometheus/prometheus/releases/download/v3.2.1/prometheus-3.2.1.linux-amd64.tar.gz"
-    "https://github.com/grafana/grafana/releases/download/v11.6.0/grafana-11.6.0.linux-amd64.tar.gz"
-    "https://dl.k8s.io/v1.32.3/bin/linux/amd64/kubelet"
-    "https://dl.k8s.io/v1.32.3/bin/linux/amd64/kubectl"
-    "https://github.com/etcd-io/etcd/releases/download/v3.6.2/etcd-v3.6.2-linux-amd64.tar.gz"
-    "https://github.com/opencontainers/runc/releases/download/v1.2.6/runc.amd64"
-    "https://github.com/derailed/k9s/releases/download/v0.50.3/k9s_Linux_amd64.tar.gz"
-
-    # --- 大型源码包 / 数据集 (看起来像编译/研究用途) ---
-    "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz"
-    "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz"
-    "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.180.tar.xz"
-    "https://github.com/torvalds/linux/archive/refs/tags/v6.12.tar.gz"
-    "https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-19.1.7.tar.gz"
-    "https://github.com/gcc-mirror/gcc/archive/refs/tags/releases/gcc-14.2.0.tar.gz"
-    "https://github.com/rust-lang/rust/archive/refs/tags/1.86.0.tar.gz"
-    "https://github.com/python/cpython/archive/refs/tags/v3.13.3.tar.gz"
-    "https://github.com/nodejs/node/archive/refs/tags/v22.15.0.tar.gz"
-
-    # --- CDN 上的大文件 (中国大陆保证可达) ---
-    "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe"
-    "https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe"
-    "https://dldir1.qq.com/qqfile/qq/PCQQ9.7.20/QQ9.7.20.29269.exe"
-    "https://issuepcdn.baidupcs.com/issue/netdisk/LinuxGuanjia/4.20.1/baidunetdisk_4.20.1_amd64.deb"
-    "https://repo.huaweicloud.com/java/jdk/17.0.14+7/jdk-17.0.14_linux-x64_bin.tar.gz"
-    "https://repo.huaweicloud.com/java/jdk/21.0.8+7/jdk-21.0.8_linux-x64_bin.tar.gz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.14.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.2.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.1.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.18.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.6.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.7.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.3.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.13.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.16.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.4.tar.xz"
+    "https://mirror.sjtu.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.sjtug.sjtu.edu.cn/kernel/v6.x/linux-6.15.tar.xz"
+    "https://mirror.sjtu.edu.cn/kernel/v6.x/linux-6.10.tar.xz"
+    "https://mirrors.sjtug.sjtu.edu.cn/kernel/v6.x/linux-6.2.tar.xz"
+    "https://mirror.sjtu.edu.cn/kernel/v6.x/linux-6.5.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.5.tar.xz"
+    "https://mirrors.sjtug.sjtu.edu.cn/kernel/v6.x/linux-6.8.tar.xz"
+    "https://mirror.sjtu.edu.cn/kernel/v6.x/linux-6.15.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.13.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.14.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.5.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.9.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.1.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.4.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.10.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.18.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.3.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.6.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.7.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.11.tar.xz"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.17.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.16.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.2.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.15.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.5.tar.xz"
+    "https://mirrors.163.com/kernel/v6.x/linux-6.14.tar.xz"
+    "https://mirrors.163.com/kernel/v6.x/linux-6.8.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.6.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.15.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.8.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.14.tar.xz"
+    "https://mirrors.163.com/kernel/v6.x/linux-6.4.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.16.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.2.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.bfsu.edu.cn/kernel/v6.x/linux-6.9.tar.xz"
+    "https://mirrors.163.com/kernel/v6.x/linux-6.3.tar.xz"
 )
 
 # ============================================
@@ -126,6 +125,7 @@ DOWNLOAD_URLS=(
 # ============================================
 CACHED_RX=""
 CACHED_TX=""
+LAST_BALANCE_CHECK=""
 
 # ============================================
 # Telegram 状态
@@ -822,43 +822,106 @@ calculate_ratio() {
 }
 
 # ============================================
-# 函数: get_dynamic_threshold
-# 说明: 根据 RX 总量动态计算流量平衡目标比例
-#       流量少 → 比例高 (成本低，加大下载伪装)
-#       流量多 → 比例低 (控制带宽成本和开支)
-# 参数: $1 = 当前 RX 字节数 (可选，不传则使用 CACHED_RX)
-# 输出: 目标比例 (浮点数)
+# 函数: get_balance_target_ratio
+# 说明: 获取流量平衡中心目标比例，默认 2.0
+# 参数: 无
+# 输出: 中心目标比例 (浮点数)
 # ============================================
-get_dynamic_threshold() {
-    local rx_bytes="${1:-${CACHED_RX}}"
-
-    # 固定阈值优先
+get_balance_target_ratio() {
     if [ -n "${RATIO_THRESHOLD}" ]; then
         echo "${RATIO_THRESHOLD}"
         return
     fi
 
-    if [ -z "${rx_bytes}" ] || [ "${rx_bytes}" = "-1" ] || [ "${rx_bytes}" -eq 0 ]; then
-        echo "2.5"
+    echo "${DEFAULT_BALANCE_TARGET_RATIO}"
+}
+
+get_balance_start_ratio() {
+    local target
+    target=$(get_balance_target_ratio)
+
+    if [ -n "${RATIO_THRESHOLD}" ]; then
+        awk "BEGIN {printf \"%.2f\", ${target} * 0.90}"
         return
     fi
 
-    local rx_gb
-    rx_gb=$(awk "BEGIN {printf \"%.0f\", ${rx_bytes}/1073741824}")
+    echo "${DEFAULT_BALANCE_START_RATIO}"
+}
 
-    if [ "${rx_gb}" -lt 30 ]; then
-        echo "5.0"
-    elif [ "${rx_gb}" -lt 80 ]; then
-        echo "4.0"
-    elif [ "${rx_gb}" -lt 150 ]; then
-        echo "3.5"
-    elif [ "${rx_gb}" -lt 300 ]; then
-        echo "3.0"
-    elif [ "${rx_gb}" -lt 600 ]; then
-        echo "2.8"
-    else
-        echo "2.5"
+get_balance_stop_ratio() {
+    local target
+    target=$(get_balance_target_ratio)
+
+    if [ -n "${RATIO_THRESHOLD}" ]; then
+        awk "BEGIN {printf \"%.2f\", ${target} * 1.10}"
+        return
     fi
+
+    echo "${DEFAULT_BALANCE_STOP_RATIO}"
+}
+
+should_start_balance_for_ratio() {
+    local ratio="$1"
+    local start_ratio="$2"
+
+    if [ "${ratio}" = "-1" ] || [ "${ratio}" = "999999" ]; then
+        return 1
+    fi
+
+    awk "BEGIN {exit !(${ratio} <= ${start_ratio})}"
+}
+
+should_stop_balance_for_ratio() {
+    local ratio="$1"
+    local stop_ratio="$2"
+
+    if [ "${ratio}" = "-1" ]; then
+        return 1
+    fi
+
+    if [ "${ratio}" = "999999" ]; then
+        return 0
+    fi
+
+    awk "BEGIN {exit !(${ratio} >= ${stop_ratio})}"
+}
+
+get_adaptive_limit_rate() {
+    local ratio="$1"
+    local target_ratio start_ratio very_low low medium
+
+    target_ratio=$(get_balance_target_ratio)
+    start_ratio=$(get_balance_start_ratio)
+    very_low=$(awk "BEGIN {printf \"%.2f\", ${start_ratio} * 0.70}")
+    low=$(awk "BEGIN {printf \"%.2f\", ${start_ratio} * 0.80}")
+    medium=$(awk "BEGIN {printf \"%.2f\", ${start_ratio} * 0.90}")
+
+    if [ -z "${ratio}" ] || [ "${ratio}" = "-1" ] || [ "${ratio}" = "999999" ]; then
+        echo "${AUTO_LIMIT_RATE_NORMAL}"
+    elif awk "BEGIN {exit !(${ratio} <= ${very_low})}"; then
+        echo "${AUTO_LIMIT_RATE_LOW}"
+    elif awk "BEGIN {exit !(${ratio} <= ${low})}"; then
+        echo "${AUTO_LIMIT_RATE_MEDIUM}"
+    elif awk "BEGIN {exit !(${ratio} <= ${medium})}"; then
+        echo "${AUTO_LIMIT_RATE_NORMAL}"
+    elif awk "BEGIN {exit !(${ratio} <= ${start_ratio})}"; then
+        echo "${AUTO_LIMIT_RATE_NEAR_START}"
+    elif awk "BEGIN {exit !(${ratio} <= ${target_ratio})}"; then
+        echo "${AUTO_LIMIT_RATE_NEAR_TARGET}"
+    else
+        echo "${AUTO_LIMIT_RATE_TOPUP}"
+    fi
+}
+
+get_effective_limit_rate() {
+    local ratio="$1"
+
+    if [ -n "${LIMIT_RATE}" ] && [ "${LIMIT_RATE}" != "auto" ]; then
+        echo "${LIMIT_RATE}"
+        return
+    fi
+
+    get_adaptive_limit_rate "${ratio}"
 }
 
 # ============================================
@@ -911,7 +974,7 @@ release_all_locks() {
             # 强制 kill 如果还没退出
             kill -0 "${curl_pid}" 2>/dev/null && kill -KILL "${curl_pid}" 2>/dev/null || true
         fi
-        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
+        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out" "${CURL_PIDFILE}.rate"
     fi
     rm -f "${SCRIPT_PIDFILE}"
     log INFO "已清理所有锁，退出脚本"
@@ -935,9 +998,35 @@ is_curl_running() {
             return 0  # 正在运行
         fi
         # 进程已退出，清理 PID 文件
-        rm -f "${CURL_PIDFILE}"
+        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.rate"
     fi
     return 1  # 未运行
+}
+
+stop_curl_download() {
+    local reason="${1:-达到停止条件}"
+
+    if [ ! -f "${CURL_PIDFILE}" ]; then
+        return 1
+    fi
+
+    local curl_pid
+    curl_pid=$(cat "${CURL_PIDFILE}" 2>/dev/null)
+    if [ -n "${curl_pid}" ] && kill -0 "${curl_pid}" 2>/dev/null; then
+        log INFO "停止流量平衡下载: ${reason} (PID: ${curl_pid})"
+        kill -TERM "${curl_pid}" 2>/dev/null || true
+
+        local waited=0
+        while kill -0 "${curl_pid}" 2>/dev/null && [ ${waited} -lt 20 ]; do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+
+        kill -0 "${curl_pid}" 2>/dev/null && kill -KILL "${curl_pid}" 2>/dev/null || true
+    fi
+
+    rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out" "${CURL_PIDFILE}.rate"
+    return 0
 }
 
 # ============================================
@@ -948,19 +1037,21 @@ is_curl_running() {
 # ============================================
 start_curl_download() {
     local url="$1"
+    local limit_rate="$2"
     local dir
     dir=$(dirname "${CURL_PIDFILE}")
     mkdir -p "${dir}" 2>/dev/null || true
 
     # 直接启动 curl，不使用 subshell，确保 kill 能正确终止 curl
     # 使用 nohup 忽略 SIGHUP，让 curl 在后台持续运行
-    nohup curl -L --limit-rate "${LIMIT_RATE}" \
+    nohup curl -L --limit-rate "${limit_rate}" \
          --connect-timeout "${CONNECT_TIMEOUT}" \
          --max-time "${MAX_DOWNLOAD_TIME}" \
          -o /dev/null -s -w "http_code=%{http_code} size=%{size_download} time=%{time_total}" \
          "${url}" > "${CURL_PIDFILE}.out" 2>&1 &
     local pid=$!
     echo "${pid}" > "${CURL_PIDFILE}"
+    echo "${limit_rate}" > "${CURL_PIDFILE}.rate"
 }
 
 # ============================================
@@ -970,16 +1061,73 @@ start_curl_download() {
 # 输出: 无
 # ============================================
 traffic_balance() {
+    local ratio="${1:-}"
     local idx url
     idx=$((RANDOM % ${#DOWNLOAD_URLS[@]}))
     url="${DOWNLOAD_URLS[${idx}]}"
 
-    log INFO "开始流量平衡下载: ${url}"
-    start_curl_download "${url}"
+    local limit_rate
+    limit_rate=$(get_effective_limit_rate "${ratio}")
+
+    log INFO "开始流量平衡下载: ${url} (限速: ${limit_rate})"
+    start_curl_download "${url}" "${limit_rate}"
 
     if [ "${TELEGRAM_ENABLED}" = true ]; then
         # 可选: 发送 Telegram 通知
         :
+    fi
+}
+
+apply_balance_policy() {
+    local reason="${1:-定期检查}"
+    local ratio
+    ratio=$(calculate_ratio)
+    LAST_BALANCE_CHECK=$(date '+%Y-%m-%d %H:%M:%S')
+
+    if [ "${ratio}" = "-1" ]; then
+        return
+    fi
+
+    if [ "${ratio}" = "999999" ]; then
+        if is_curl_running; then
+            stop_curl_download "TX=0 且 RX>0，无需继续补下载"
+        fi
+        log INFO "流量比例: 极大值 (TX=0)，监控中"
+        return
+    fi
+
+    local target_ratio start_ratio stop_ratio
+    target_ratio=$(get_balance_target_ratio)
+    start_ratio=$(get_balance_start_ratio)
+    stop_ratio=$(get_balance_stop_ratio)
+
+    if is_curl_running; then
+        if should_stop_balance_for_ratio "${ratio}" "${stop_ratio}"; then
+            stop_curl_download "流量比例 ${ratio} >= ${stop_ratio}(停止线)"
+        else
+            local desired_rate current_rate
+            desired_rate=$(get_effective_limit_rate "${ratio}")
+            current_rate=$(cat "${CURL_PIDFILE}.rate" 2>/dev/null || echo "")
+
+            if [ -n "${current_rate}" ] && [ "${current_rate}" != "${desired_rate}" ]; then
+                log INFO "流量比例 ${ratio} < ${stop_ratio}(停止线)，调整下载限速: ${current_rate} -> ${desired_rate}"
+                stop_curl_download "调整自适应限速"
+                traffic_balance "${ratio}"
+            else
+                [ -z "${current_rate}" ] && echo "${desired_rate}" > "${CURL_PIDFILE}.rate"
+                log INFO "流量比例 ${ratio} < ${stop_ratio}(停止线)，流量平衡下载继续 (限速: ${desired_rate})"
+            fi
+        fi
+        return
+    fi
+
+    if should_start_balance_for_ratio "${ratio}" "${start_ratio}"; then
+        log INFO "流量比例 ${ratio} <= ${start_ratio}(启动线)，${reason}，触发流量平衡，目标中心 ${target_ratio}"
+        traffic_balance "${ratio}"
+    elif should_stop_balance_for_ratio "${ratio}" "${stop_ratio}"; then
+        log INFO "流量比例 ${ratio} >= ${stop_ratio}(停止线)，已达标"
+    else
+        log INFO "流量比例 ${ratio} 处于 ${start_ratio}~${stop_ratio} 目标区间，监控中"
     fi
 }
 
@@ -991,19 +1139,19 @@ traffic_balance() {
 # ============================================
 check_download_status() {
     if [ ! -f "${CURL_PIDFILE}" ]; then
-        return
+        return 1
     fi
 
     local curl_pid
     curl_pid=$(cat "${CURL_PIDFILE}" 2>/dev/null)
     if [ -z "${curl_pid}" ]; then
-        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
-        return
+        rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out" "${CURL_PIDFILE}.rate"
+        return 1
     fi
 
     # 检查 curl 进程是否仍在运行
     if kill -0 "${curl_pid}" 2>/dev/null; then
-        return  # 仍在运行
+        return 1  # 仍在运行
     fi
 
     # curl 进程已结束，读取结果
@@ -1029,7 +1177,8 @@ check_download_status() {
     fi
 
     # 清理
-    rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out"
+    rm -f "${CURL_PIDFILE}" "${CURL_PIDFILE}.out" "${CURL_PIDFILE}.rate"
+    return 0
 }
 
 # ============================================
@@ -1149,8 +1298,12 @@ send_traffic_report() {
     data=$(get_traffic_data)
     read -r rx tx <<< "${data}"
 
-    local ratio_str status
+    local ratio_str status target_ratio start_ratio stop_ratio balance_needed
     ratio=$(calculate_ratio)
+    target_ratio=$(get_balance_target_ratio)
+    start_ratio=$(get_balance_start_ratio)
+    stop_ratio=$(get_balance_stop_ratio)
+    balance_needed=false
 
     if [ "${ratio}" = "-1" ]; then
         ratio_str="N/A (无数据)"
@@ -1158,7 +1311,16 @@ send_traffic_report() {
     else
         ratio_str="${ratio}"
         if is_curl_running; then
-            status="平衡中"
+            if should_stop_balance_for_ratio "${ratio}" "${stop_ratio}"; then
+                status="待停止"
+            else
+                status="平衡中"
+            fi
+        elif should_start_balance_for_ratio "${ratio}" "${start_ratio}"; then
+            status="待平衡"
+            balance_needed=true
+        elif should_stop_balance_for_ratio "${ratio}" "${stop_ratio}"; then
+            status="已达标"
         else
             status="监控中"
         fi
@@ -1168,15 +1330,35 @@ send_traffic_report() {
     rx_human=$(human_bytes "${rx}")
     tx_human=$(human_bytes "${tx}")
 
-    local threshold
-    threshold=$(get_dynamic_threshold "${rx}")
-
     local curl_status
     if is_curl_running; then
-        curl_status="运行中"
+        if should_stop_balance_for_ratio "${ratio}" "${stop_ratio}"; then
+            curl_status="运行中（待停止）"
+        else
+            curl_status="运行中"
+        fi
+    elif [ "${balance_needed}" = true ]; then
+        curl_status="空闲（待启动）"
     else
         curl_status="空闲"
     fi
+
+    local desired_limit_rate current_limit_rate limit_rate_status
+    desired_limit_rate=$(get_effective_limit_rate "${ratio}")
+    current_limit_rate=$(cat "${CURL_PIDFILE}.rate" 2>/dev/null || echo "")
+    if [ -n "${current_limit_rate}" ] && is_curl_running; then
+        limit_rate_status="${current_limit_rate}"
+    else
+        limit_rate_status="${desired_limit_rate}"
+    fi
+    if [ -n "${LIMIT_RATE}" ] && [ "${LIMIT_RATE}" != "auto" ]; then
+        limit_rate_status="${limit_rate_status} (固定)"
+    else
+        limit_rate_status="${limit_rate_status} (自动)"
+    fi
+
+    local last_check_str
+    last_check_str="${LAST_BALANCE_CHECK:-尚未检查}"
 
     local report
     report=$(cat <<EOF
@@ -1188,12 +1370,13 @@ send_traffic_report() {
 下载(RX): ${rx_human}
 上传(TX): ${tx_human}
 RX/TX比例: ${ratio_str}
-目标比例: ${threshold}
+目标比例: ${target_ratio} (启动≤${start_ratio} / 停止≥${stop_ratio})
 ----------------------------
 状态: ${status}
 脚本PID: $$
 curl下载: ${curl_status}
-上次检查: ${timestamp}
+下载限速: ${limit_rate_status}
+上次检查: ${last_check_str}
 EOF
 )
 
@@ -1731,8 +1914,11 @@ self_test() {
     echo "[6/7] 配置文件加载"
     echo "  RESET_DAY=${RESET_DAY}"
     echo "  INTERFACE=${INTERFACE:-'(自动检测)'}"
-    echo "  LIMIT_RATE=${LIMIT_RATE}"
+    echo "  LIMIT_RATE=${LIMIT_RATE:-auto}"
+    echo "  AUTO_LIMIT_RATE=$(get_adaptive_limit_rate "1.8") at ratio 1.8"
     echo "  CHECK_INTERVAL=${CHECK_INTERVAL}"
+    echo "  BALANCE_TARGET=$(get_balance_target_ratio)"
+    echo "  BALANCE_RANGE=$(get_balance_start_ratio)~$(get_balance_stop_ratio)"
     echo "  TG_POLL_INTERVAL=${TG_POLL_INTERVAL}"
     echo "  TG_API_BASE_URL=${TG_API_BASE_URL:-https://api.telegram.org}"
     echo "  PASS: 配置加载完成"
@@ -1774,7 +1960,7 @@ Traffic Balance Monitor v${SCRIPT_VERSION}
 选项:
   -d, --reset-day DAY      月度流量结算日 (1-31, 默认: 1)
   -i, --interface IFACE    手动指定外网网卡 (默认: 自动检测)
-  -l, --limit-rate SPEED   curl 下载限速 (默认: 1M)
+  -l, --limit-rate SPEED   curl 下载限速 (默认: auto，自适应)
   -c, --config FILE        指定配置文件路径
       --install-service    安装为系统服务 (需要 root)
       --uninstall-service  卸载系统服务 (需要 root)
@@ -1915,11 +2101,12 @@ main_loop() {
     CACHED_RX=""
     CACHED_TX=""
 
-    if [ -n "${RATIO_THRESHOLD}" ]; then
-        log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s, 目标比例: ${RATIO_THRESHOLD} (固定)"
-    else
-        log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s, 目标比例: 动态"
-    fi
+    local target_ratio start_ratio stop_ratio limit_rate_mode
+    target_ratio=$(get_balance_target_ratio)
+    start_ratio=$(get_balance_start_ratio)
+    stop_ratio=$(get_balance_stop_ratio)
+    limit_rate_mode="${LIMIT_RATE:-auto}"
+    log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s, 平衡策略: 目标 ${target_ratio}, 启动<=${start_ratio}, 停止>=${stop_ratio}, 限速: ${limit_rate_mode}"
 
     while true; do
         local now
@@ -1927,33 +2114,15 @@ main_loop() {
 
         # b. 流量检查 (每 CHECK_INTERVAL 秒)
         if [ $((now - last_check)) -ge "${CHECK_INTERVAL}" ]; then
-            local ratio
-            ratio=$(calculate_ratio)
-
-            if [ "${ratio}" = "-1" ]; then
-                # N/A，不做任何操作
-                :
-            elif [ "${ratio}" = "999999" ]; then
-                # TX 为 0，RX > 0，不触发平衡但记录
-                log INFO "流量比例: 极大值 (TX=0)，监控中"
-            else
-                local threshold
-                threshold=$(get_dynamic_threshold "${CACHED_RX}")
-                if awk "BEGIN {exit !(${ratio} <= ${threshold})}"; then
-                    if ! is_curl_running; then
-                        log INFO "流量比例 ${ratio} <= ${threshold}(目标)，触发流量平衡"
-                        traffic_balance
-                    fi
-                else
-                    log INFO "流量比例 ${ratio} > ${threshold}(目标)，监控中"
-                fi
-            fi
-
+            apply_balance_policy "定期检查"
             last_check="${now}"
         fi
 
         # c. 检查 curl 是否完成
-        check_download_status
+        if check_download_status; then
+            apply_balance_policy "下载完成后续检查"
+            last_check=$(date +%s)
+        fi
 
         # d. Telegram 轮询
         if [ "${TELEGRAM_ENABLED}" = true ]; then
