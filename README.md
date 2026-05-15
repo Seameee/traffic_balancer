@@ -178,18 +178,58 @@ TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
 TELEGRAM_ALLOWED_USER_ID="123456789"
 RESET_DAY=15
 LIMIT_RATE="1M"
+# 使用 Cloudflare Worker 反代 Telegram Bot API 时填写，不包含 /bot<TOKEN>
+# TG_API_BASE_URL="https://tg-api.example.workers.dev"
+# TG_API_PROXY_SECRET="your-long-random-secret"
 # TG_PROXY="socks5://user:pass@host:port"
 EOF
 ```
 
-### 4. 重启服务
+### 4. 使用 Cloudflare Worker 反代 Telegram API
+
+如果 VPS 部署在中国大陆地区，不建议长期直接使用 SOCKS5 访问 Telegram Bot API。可以把 `api.telegram.org` 反代到 Cloudflare Worker，再让脚本访问 Worker 域名。
+
+1. 在 Cloudflare Workers 新建 Worker，代码使用本仓库的 [`cloudflare-workers/telegram-api-proxy.js`](./cloudflare-workers/telegram-api-proxy.js)
+2. 在 Worker 环境变量/Secret 中配置：
+
+```text
+BOT_TOKENS=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789,9876543210:OtherBotToken123456789012345678901
+PROXY_SECRET=your-long-random-secret
+ALLOWED_METHODS=getUpdates,sendMessage
+RATE_LIMIT_PER_IP=60
+RATE_LIMIT_PER_BOT=240
+MAX_GETUPDATES_TIMEOUT=10
+```
+
+3. 推荐绑定一个 KV 命名空间到 `RATE_KV`，用于跨 Worker 实例限流；不绑定时脚本会退化为单实例内存限流，仍会校验 token 白名单和密钥头，但抗刷能力弱一些。
+4. 在本脚本配置文件中设置 Worker 根地址和同一个密钥：
+
+```bash
+TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+TELEGRAM_ALLOWED_USER_ID="123456789"
+TG_API_BASE_URL="https://tg-api.example.workers.dev"
+TG_API_PROXY_SECRET="your-long-random-secret"
+TG_PROXY=""
+```
+
+`TG_API_BASE_URL` 也可以填写裸域名，例如 `tg-api.example.com`，脚本会自动补全为 `https://tg-api.example.com`。
+
+Worker 防刷策略：
+
+- 只接受 `BOT_TOKENS` 白名单内的 bot token，支持多个 bot token。
+- 要求请求头 `X-TG-Proxy-Secret` 匹配 `PROXY_SECRET` 或 `PROXY_SECRETS`。
+- 默认只允许 `getUpdates` 和 `sendMessage`，可通过 `ALLOWED_METHODS` 扩展。
+- 限制请求体大小，默认 `MAX_BODY_BYTES=1048576`。
+- 按来源 IP 和 bot token 分别限流，默认每分钟 `RATE_LIMIT_PER_IP=60`、`RATE_LIMIT_PER_BOT=240`。
+
+### 5. 重启服务
 
 ```bash
 sudo systemctl restart traffic-balance  # systemd
 sudo rc-service traffic-balance restart   # OpenRC
 ```
 
-### 5. 使用
+### 6. 使用
 
 在 Telegram 向机器人发送 `/traffic`，机器人将返回：
 
@@ -240,6 +280,10 @@ curl下载: 空闲
 # --- Telegram (可选) ---
 TELEGRAM_BOT_TOKEN="1234567890:ABCdef..."
 TELEGRAM_ALLOWED_USER_ID="123456789"
+# Telegram Bot API 根地址，不包含 /bot<TOKEN> (留空则使用 https://api.telegram.org)
+# TG_API_BASE_URL="https://tg-api.example.workers.dev"
+# Telegram API 反代密钥头，配合 Cloudflare Worker 使用
+# TG_API_PROXY_SECRET="your-long-random-secret"
 # Telegram 代理 (留空则直连，支持 socks5:// 或 http://)
 # TG_PROXY="socks5://user:pass@host:port"
 

@@ -41,6 +41,10 @@ TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ALLOWED_USER_ID=""
 # Telegram 代理 (留空则直连，如 socks5://user:pass@host:port)
 TG_PROXY=""
+# Telegram Bot API 根地址，不包含 /bot<TOKEN> (留空则使用官方 https://api.telegram.org)
+TG_API_BASE_URL=""
+# Telegram API 反代密钥头，配合 Cloudflare Worker 使用
+TG_API_PROXY_SECRET=""
 
 # 日志文件轮转阈值 (10 MiB)
 readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
@@ -109,7 +113,7 @@ CACHED_TX=""
 # ============================================
 TELEGRAM_ENABLED=false
 API_BASE=""
-TELEGRAM_PROXY_ARG=""
+TELEGRAM_CURL_ARGS=()
 LAST_UPDATE_ID=0
 
 # ============================================
@@ -982,7 +986,7 @@ send_telegram_message() {
     [ -z "${chat_id}" ] && return
 
     curl -s --connect-timeout 10 --max-time 15 \
-        ${TELEGRAM_PROXY_ARG} \
+        "${TELEGRAM_CURL_ARGS[@]}" \
         -X POST "${API_BASE}/sendMessage" \
         -d "chat_id=${chat_id}" \
         --data-urlencode "text=${text}" \
@@ -1048,7 +1052,7 @@ init_telegram_offset() {
 
     local response latest_id
     response=$(curl -s --connect-timeout 10 --max-time 15 \
-        ${TELEGRAM_PROXY_ARG} \
+        "${TELEGRAM_CURL_ARGS[@]}" \
         "${API_BASE}/getUpdates?offset=-1&timeout=0" 2>/dev/null) || true
 
     if [ -z "${response}" ]; then
@@ -1248,7 +1252,7 @@ poll_telegram() {
     local response
 
     response=$(curl -s --connect-timeout 10 --max-time "$((TG_POLL_INTERVAL + 5))" \
-        ${TELEGRAM_PROXY_ARG} \
+        "${TELEGRAM_CURL_ARGS[@]}" \
         "${API_BASE}/getUpdates?offset=${offset}&timeout=${TG_POLL_INTERVAL}" 2>/dev/null) || true
 
     if [ -z "${response}" ]; then
@@ -1667,6 +1671,7 @@ self_test() {
     echo "  LIMIT_RATE=${LIMIT_RATE}"
     echo "  CHECK_INTERVAL=${CHECK_INTERVAL}"
     echo "  TG_POLL_INTERVAL=${TG_POLL_INTERVAL}"
+    echo "  TG_API_BASE_URL=${TG_API_BASE_URL:-https://api.telegram.org}"
     echo "  PASS: 配置加载完成"
 
     # 7. 权限检查
@@ -1766,22 +1771,34 @@ load_config() {
 # 函数: setup_telegram
 # 说明: 检查并初始化 Telegram 功能
 # 参数: 无
-# 输出: 无 (设置全局变量 TELEGRAM_ENABLED, API_BASE)
+# 输出: 无 (设置全局变量 TELEGRAM_ENABLED, API_BASE, TELEGRAM_CURL_ARGS)
 # ============================================
 setup_telegram() {
     TELEGRAM_ENABLED=false
     API_BASE=""
-    TELEGRAM_PROXY_ARG=""
+    TELEGRAM_CURL_ARGS=()
 
     if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_ALLOWED_USER_ID}" ]; then
         if echo "${TELEGRAM_BOT_TOKEN}" | grep -qE '^[0-9]{8,10}:[A-Za-z0-9_-]{35,}$'; then
+            local api_base_url="${TG_API_BASE_URL:-https://api.telegram.org}"
+            if ! echo "${api_base_url}" | grep -qE '^https?://'; then
+                api_base_url="https://${api_base_url}"
+            fi
+            api_base_url="${api_base_url%/}"
+
             TELEGRAM_ENABLED=true
-            API_BASE="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
+            API_BASE="${api_base_url}/bot${TELEGRAM_BOT_TOKEN}"
+
             # 构建代理参数 (如 TG_PROXY="socks5://user:pass@host:port")
             if [ -n "${TG_PROXY}" ]; then
-                TELEGRAM_PROXY_ARG="-x ${TG_PROXY}"
+                TELEGRAM_CURL_ARGS+=("-x" "${TG_PROXY}")
             fi
-            log INFO "Telegram 通知已启用"
+
+            if [ -n "${TG_API_PROXY_SECRET}" ]; then
+                TELEGRAM_CURL_ARGS+=("-H" "X-TG-Proxy-Secret: ${TG_API_PROXY_SECRET}")
+            fi
+
+            log INFO "Telegram 通知已启用 - API: ${api_base_url}"
         else
             log WARN "Telegram Bot Token 格式不合法，跳过 Telegram 功能"
         fi
