@@ -36,11 +36,19 @@ TG_POLL_INTERVAL=5
 CONNECT_TIMEOUT=30
 MAX_DOWNLOAD_TIME=7200
 
+# 流量平衡目标比例 (留空则动态计算: 低流量高比例，高流量低比例)
+# 设置固定值则关闭动态: 如 RATIO_THRESHOLD="4.0"
+RATIO_THRESHOLD=""
+
 # Telegram 配置 (空值表示禁用)
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ALLOWED_USER_ID=""
 # Telegram 代理 (留空则直连，如 socks5://user:pass@host:port)
 TG_PROXY=""
+# Telegram Bot API 根地址，不包含 /bot<TOKEN> (留空则使用官方 https://api.telegram.org)
+TG_API_BASE_URL=""
+# Telegram API 反代密钥头，配合 Cloudflare Worker 使用
+TG_API_PROXY_SECRET=""
 
 # 日志文件轮转阈值 (10 MiB)
 readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
@@ -49,53 +57,68 @@ readonly MAX_LOG_SIZE=$((10 * 1024 * 1024))
 # 下载 URL 列表 (硬编码，不可修改顺序)
 # ============================================
 DOWNLOAD_URLS=(
+    # --- 国内 Linux 镜像站 (Debian/系统相关，大陆可用) ---
+    # 清华 TUNA
+    "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
+    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/kernel/v6.x/linux-6.6.tar.xz"
+    "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/l/linux/linux-headers-6.1.0-32-amd64_6.1.129-1_amd64.deb"
+    "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/g/gcc-12/gcc-12_12.2.0-14_amd64.deb"
+    # 中科大 USTC
+    "https://mirrors.ustc.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.10.0-amd64-DVD-1.iso"
+    "https://mirrors.ustc.edu.cn/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
+    "https://mirrors.ustc.edu.cn/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.ustc.edu.cn/debian/pool/main/l/linux/linux-image-6.1.0-32-amd64_6.1.129-1_amd64.deb"
+    "https://mirrors.ustc.edu.cn/debian/pool/main/g/glibc/libc6_2.36-9+deb12u10_amd64.deb"
+    # 阿里云镜像
+    "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
+    "https://mirrors.aliyun.com/ubuntu-releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso"
+    "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.aliyun.com/debian/pool/main/l/linux/linux-image-6.1.0-31-amd64_6.1.128-1_amd64.deb"
+    "https://mirrors.aliyun.com/debian/pool/main/o/openssl/openssl_3.0.15-1~deb12u1_amd64.deb"
+    # 华为云镜像
+    "https://mirrors.huaweicloud.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
+    "https://mirrors.huaweicloud.com/kernel/v6.x/linux-6.12.tar.xz"
+    "https://mirrors.huaweicloud.com/debian/pool/main/n/nginx/nginx-full_1.22.1-9_amd64.deb"
+    # 腾讯云镜像
+    "https://mirrors.tencent.com/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
+    "https://mirrors.tencent.com/kernel/v6.x/linux-6.6.tar.xz"
+
+    # --- 常见开源软件发布 (Debian 运维常接触) ---
+    "https://go.dev/dl/go1.24.3.linux-amd64.tar.gz"
+    "https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-x64.tar.xz"
+    "https://github.com/containerd/containerd/releases/download/v2.1.0/containerd-2.1.0-linux-amd64.tar.gz"
+    "https://github.com/containernetworking/plugins/releases/download/v1.7.1/cni-plugins-linux-amd64-v1.7.1.tgz"
+    "https://get.docker.com/builds/Linux/x86_64/docker-28.0.4.tgz"
+    "https://github.com/kubernetes/kubernetes/releases/download/v1.32.3/kubernetes.tar.gz"
+    "https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.32.0/crictl-v1.32.0-linux-amd64.tar.gz"
+    "https://github.com/prometheus/prometheus/releases/download/v3.2.1/prometheus-3.2.1.linux-amd64.tar.gz"
+    "https://github.com/grafana/grafana/releases/download/v11.6.0/grafana-11.6.0.linux-amd64.tar.gz"
+    "https://dl.k8s.io/v1.32.3/bin/linux/amd64/kubelet"
+    "https://dl.k8s.io/v1.32.3/bin/linux/amd64/kubectl"
+    "https://github.com/etcd-io/etcd/releases/download/v3.6.2/etcd-v3.6.2-linux-amd64.tar.gz"
+    "https://github.com/opencontainers/runc/releases/download/v1.2.6/runc.amd64"
+    "https://github.com/derailed/k9s/releases/download/v0.50.3/k9s_Linux_amd64.tar.gz"
+
+    # --- 大型源码包 / 数据集 (看起来像编译/研究用途) ---
+    "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz"
+    "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz"
+    "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.180.tar.xz"
+    "https://github.com/torvalds/linux/archive/refs/tags/v6.12.tar.gz"
+    "https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-19.1.7.tar.gz"
+    "https://github.com/gcc-mirror/gcc/archive/refs/tags/releases/gcc-14.2.0.tar.gz"
+    "https://github.com/rust-lang/rust/archive/refs/tags/1.86.0.tar.gz"
+    "https://github.com/python/cpython/archive/refs/tags/v3.13.3.tar.gz"
+    "https://github.com/nodejs/node/archive/refs/tags/v22.15.0.tar.gz"
+
+    # --- CDN 上的大文件 (中国大陆保证可达) ---
     "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe"
-    "http://speedtest.tele2.net/10MB.zip"
-    "http://speedtest.tele2.net/100MB.zip"
-    "http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
-    "http://speedtest.singapore.linode.com/100MB-singapore.bin"
-    "http://speedtest.fremont.linode.com/100MB-fremont.bin"
-    "http://speedtest.newark.linode.com/100MB-newark.bin"
-    "http://speedtest.london.linode.com/100MB-london.bin"
-    "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin"
-    "http://speedtest.dallas.linode.com/100MB-dallas.bin"
-    "http://speedtest.atlanta.linode.com/100MB-atlanta.bin"
-    "http://lon.download.datapacket.com/100mb.bin"
-    "http://fra.download.datapacket.com/100mb.bin"
-    "http://tyo.download.datapacket.com/100mb.bin"
-    "http://sin.download.datapacket.com/100mb.bin"
-    "http://mad.download.datapacket.com/100mb.bin"
-    "http://par.download.datapacket.com/100mb.bin"
-    "http://sto.download.datapacket.com/100mb.bin"
-    "https://nj-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://il-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://ga-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://fl-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://tx-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://sjo-ca-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://lax-ca-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://wa-us-ping.vultr.com/vultr.com.100MB.bin"
-    "https://tor-ca-ping.vultr.com/vultr.com.100MB.bin"
-    "https://fra-de-ping.vultr.com/vultr.com.100MB.bin"
-    "https://par-fr-ping.vultr.com/vultr.com.100MB.bin"
-    "https://ams-nl-ping.vultr.com/vultr.com.100MB.bin"
-    "https://lon-gb-ping.vultr.com/vultr.com.100MB.bin"
-    "https://sgp-ping.vultr.com/vultr.com.100MB.bin"
-    "https://hnd-jp-ping.vultr.com/vultr.com.100MB.bin"
-    "https://syd-au-ping.vultr.com/vultr.com.100MB.bin"
-    "https://mex-mx-ping.vultr.com/vultr.com.100MB.bin"
-    "https://mel-au-ping.vultr.com/vultr.com.100MB.bin"
-    "https://sto-se-ping.vultr.com/vultr.com.100MB.bin"
-    "http://ping.online.net/100Mb.dat"
-    "http://speedtest.sydney.linode.com/100MB-sydney.bin"
-    "https://raw.githubusercontent.com/torvalds/linux/master/COPYING"
-    "https://ossweb-img.qq.com/images/lol/web201310/skin/big10001.jpg"
-    "https://lf5-j1gamecdn-cn.dailygn.com/obj/lf-game-lf/gdl_app_2682/1233880772355.mp4"
-    "http://proof.ovh.net/files/100Mb.dat"
-    "http://rbx.proof.ovh.net/files/100Mb.dat"
-    "http://sbg.proof.ovh.net/files/100Mb.dat"
-    "http://gra.proof.ovh.net/files/100Mb.dat"
-    "https://ysh2.gz-hezhi.com:8899/downloads/ysh_pc_latest.exe"
+    "https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe"
+    "https://dldir1.qq.com/qqfile/qq/PCQQ9.7.20/QQ9.7.20.29269.exe"
+    "https://issuepcdn.baidupcs.com/issue/netdisk/LinuxGuanjia/4.20.1/baidunetdisk_4.20.1_amd64.deb"
+    "https://repo.huaweicloud.com/java/jdk/17.0.14+7/jdk-17.0.14_linux-x64_bin.tar.gz"
+    "https://repo.huaweicloud.com/java/jdk/21.0.8+7/jdk-21.0.8_linux-x64_bin.tar.gz"
 )
 
 # ============================================
@@ -109,6 +132,7 @@ CACHED_TX=""
 # ============================================
 TELEGRAM_ENABLED=false
 API_BASE=""
+TELEGRAM_CURL_ARGS=()
 LAST_UPDATE_ID=0
 
 # ============================================
@@ -798,6 +822,46 @@ calculate_ratio() {
 }
 
 # ============================================
+# 函数: get_dynamic_threshold
+# 说明: 根据 RX 总量动态计算流量平衡目标比例
+#       流量少 → 比例高 (成本低，加大下载伪装)
+#       流量多 → 比例低 (控制带宽成本和开支)
+# 参数: $1 = 当前 RX 字节数 (可选，不传则使用 CACHED_RX)
+# 输出: 目标比例 (浮点数)
+# ============================================
+get_dynamic_threshold() {
+    local rx_bytes="${1:-${CACHED_RX}}"
+
+    # 固定阈值优先
+    if [ -n "${RATIO_THRESHOLD}" ]; then
+        echo "${RATIO_THRESHOLD}"
+        return
+    fi
+
+    if [ -z "${rx_bytes}" ] || [ "${rx_bytes}" = "-1" ] || [ "${rx_bytes}" -eq 0 ]; then
+        echo "2.5"
+        return
+    fi
+
+    local rx_gb
+    rx_gb=$(awk "BEGIN {printf \"%.0f\", ${rx_bytes}/1073741824}")
+
+    if [ "${rx_gb}" -lt 30 ]; then
+        echo "5.0"
+    elif [ "${rx_gb}" -lt 80 ]; then
+        echo "4.0"
+    elif [ "${rx_gb}" -lt 150 ]; then
+        echo "3.5"
+    elif [ "${rx_gb}" -lt 300 ]; then
+        echo "3.0"
+    elif [ "${rx_gb}" -lt 600 ]; then
+        echo "2.8"
+    else
+        echo "2.5"
+    fi
+}
+
+# ============================================
 # 函数: acquire_script_lock
 # 说明: 获取脚本单实例锁 (PID 文件)
 # 参数: 无
@@ -978,17 +1042,91 @@ send_telegram_message() {
     local chat_id="$1"
     local text="$2"
 
-    # URL 编码 (优先 python，fallback 到 sed)
-    local encoded_text
-    encoded_text=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${text}'''))" 2>/dev/null || \
-                   python2 -c "import urllib; print(urllib.quote('''${text}'''))" 2>/dev/null || \
-                   echo "${text}" | sed 's/ /%20/g;s/\n/%0A/g')
+    [ -z "${chat_id}" ] && return
 
     curl -s --connect-timeout 10 --max-time 15 \
-        ${TELEGRAM_PROXY_ARG} \
+        "${TELEGRAM_CURL_ARGS[@]}" \
         -X POST "${API_BASE}/sendMessage" \
-        -d "chat_id=${chat_id}&text=${encoded_text}" \
+        -d "chat_id=${chat_id}" \
+        --data-urlencode "text=${text}" \
         -o /dev/null 2>/dev/null || true
+}
+
+# ============================================
+# 函数: telegram_latest_update_id
+# 说明: 从 Telegram getUpdates 响应中提取最大的 update_id
+# 参数: $1 = API 响应 JSON
+# 输出: 最大 update_id，未找到则为空
+# ============================================
+telegram_latest_update_id() {
+    local response="$1"
+
+    if command -v jq >/dev/null 2>&1; then
+        echo "${response}" | jq -r '[.result[]?.update_id] | max // empty' 2>/dev/null
+        return
+    fi
+
+    local python_bin=""
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python2 >/dev/null 2>&1; then
+        python_bin="python2"
+    fi
+
+    [ -z "${python_bin}" ] && return
+
+    "${python_bin}" -c '
+import json
+import sys
+
+try:
+    response = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+try:
+    number_types = (int, long)
+except NameError:
+    number_types = (int,)
+
+ids = []
+for update in response.get("result", []):
+    update_id = update.get("update_id")
+    if isinstance(update_id, number_types):
+        ids.append(update_id)
+
+if ids:
+    print(max(ids))
+' <<< "${response}" 2>/dev/null
+}
+
+# ============================================
+# 函数: init_telegram_offset
+# 说明: 启动时跳过历史 Telegram updates，避免重启后补发旧 /traffic 回复
+# 参数: 无
+# 输出: 无
+# ============================================
+init_telegram_offset() {
+    LAST_UPDATE_ID=0
+
+    local response latest_id
+    response=$(curl -s --connect-timeout 10 --max-time 15 \
+        "${TELEGRAM_CURL_ARGS[@]}" \
+        "${API_BASE}/getUpdates?offset=-1&timeout=0" 2>/dev/null) || true
+
+    if [ -z "${response}" ]; then
+        return
+    fi
+
+    if ! echo "${response}" | grep -q '"ok":true'; then
+        return
+    fi
+
+    latest_id=$(telegram_latest_update_id "${response}")
+    if [ -n "${latest_id}" ]; then
+        LAST_UPDATE_ID="${latest_id}"
+        log INFO "Telegram offset 已初始化到 update_id ${LAST_UPDATE_ID}，跳过启动前历史消息"
+    fi
 }
 
 # ============================================
@@ -1030,6 +1168,9 @@ send_traffic_report() {
     rx_human=$(human_bytes "${rx}")
     tx_human=$(human_bytes "${tx}")
 
+    local threshold
+    threshold=$(get_dynamic_threshold "${rx}")
+
     local curl_status
     if is_curl_running; then
         curl_status="运行中"
@@ -1047,6 +1188,7 @@ send_traffic_report() {
 下载(RX): ${rx_human}
 上传(TX): ${tx_human}
 RX/TX比例: ${ratio_str}
+目标比例: ${threshold}
 ----------------------------
 状态: ${status}
 脚本PID: $$
@@ -1079,7 +1221,7 @@ parse_and_handle_updates() {
             update_id=$(echo "${update}" | jq -r '.update_id // empty' 2>/dev/null)
             [ -z "${update_id}" ] && continue
 
-            if [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
+            if echo "${update_id}" | grep -qE '^[0-9]+$' && [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
                 LAST_UPDATE_ID="${update_id}"
             fi
 
@@ -1104,32 +1246,61 @@ parse_and_handle_updates() {
             fi
         done <<< "${updates}"
     else
-        # python3 fallback
+        # python fallback
+        local python_bin=""
         if command -v python3 >/dev/null 2>&1; then
-            python3 -c "
-import sys, json
-response = json.load(sys.stdin)
-for update in response.get('result', []):
-    update_id = update.get('update_id', 0)
-    if update_id > ${LAST_UPDATE_ID}:
-        # 无法直接修改 shell 变量，改为输出新的 LAST_UPDATE_ID
-        pass
-    msg = update.get('message', {})
-    from_id = str(msg.get('from', {}).get('id', ''))
-    if from_id != '${TELEGRAM_ALLOWED_USER_ID}':
-        continue
-    text = msg.get('text', '').strip()
-    chat_id = msg.get('chat', {}).get('id', '')
-    if text.startswith('/traffic'):
-        print(f'CMD:traffic CHAT:{chat_id}')
-" <<< "${response}" 2>/dev/null | while IFS= read -r line; do
-                if echo "${line}" | grep -q '^CMD:traffic CHAT:'; then
-                    local cid
-                    cid="${line//CMD:traffic CHAT:/}"
-                    [ -n "${cid}" ] && send_traffic_report "${cid}"
-                fi
-            done
+            python_bin="python3"
+        elif command -v python2 >/dev/null 2>&1; then
+            python_bin="python2"
         fi
+
+        [ -z "${python_bin}" ] && return
+
+        local line update_id cid
+        while IFS= read -r line; do
+            case "${line}" in
+                UPDATE_ID:*)
+                    update_id="${line#UPDATE_ID:}"
+                    if echo "${update_id}" | grep -qE '^[0-9]+$' && [ "${update_id}" -gt "${LAST_UPDATE_ID}" ]; then
+                        LAST_UPDATE_ID="${update_id}"
+                    fi
+                    ;;
+                CMD:traffic\ CHAT:*)
+                    cid="${line#CMD:traffic CHAT:}"
+                    [ -n "${cid}" ] && send_traffic_report "${cid}"
+                    ;;
+            esac
+        done < <("${python_bin}" -c '
+import json
+import re
+import sys
+
+try:
+    response = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+allowed_user_id = sys.argv[1]
+try:
+    number_types = (int, long)
+except NameError:
+    number_types = (int,)
+
+for update in response.get("result", []):
+    update_id = update.get("update_id")
+    if isinstance(update_id, number_types):
+        print("UPDATE_ID:%s" % update_id)
+
+    msg = update.get("message") or {}
+    from_id = str((msg.get("from") or {}).get("id", ""))
+    if from_id != allowed_user_id:
+        continue
+
+    text = (msg.get("text") or "").strip()
+    chat_id = (msg.get("chat") or {}).get("id", "")
+    if re.match(r"^/traffic(@[A-Za-z0-9_]+)?$", text) and chat_id != "":
+        print("CMD:traffic CHAT:%s" % chat_id)
+' "${TELEGRAM_ALLOWED_USER_ID}" <<< "${response}" 2>/dev/null)
     fi
 }
 
@@ -1144,7 +1315,7 @@ poll_telegram() {
     local response
 
     response=$(curl -s --connect-timeout 10 --max-time "$((TG_POLL_INTERVAL + 5))" \
-        ${TELEGRAM_PROXY_ARG} \
+        "${TELEGRAM_CURL_ARGS[@]}" \
         "${API_BASE}/getUpdates?offset=${offset}&timeout=${TG_POLL_INTERVAL}" 2>/dev/null) || true
 
     if [ -z "${response}" ]; then
@@ -1563,6 +1734,7 @@ self_test() {
     echo "  LIMIT_RATE=${LIMIT_RATE}"
     echo "  CHECK_INTERVAL=${CHECK_INTERVAL}"
     echo "  TG_POLL_INTERVAL=${TG_POLL_INTERVAL}"
+    echo "  TG_API_BASE_URL=${TG_API_BASE_URL:-https://api.telegram.org}"
     echo "  PASS: 配置加载完成"
 
     # 7. 权限检查
@@ -1662,22 +1834,34 @@ load_config() {
 # 函数: setup_telegram
 # 说明: 检查并初始化 Telegram 功能
 # 参数: 无
-# 输出: 无 (设置全局变量 TELEGRAM_ENABLED, API_BASE)
+# 输出: 无 (设置全局变量 TELEGRAM_ENABLED, API_BASE, TELEGRAM_CURL_ARGS)
 # ============================================
 setup_telegram() {
     TELEGRAM_ENABLED=false
     API_BASE=""
-    TELEGRAM_PROXY_ARG=""
+    TELEGRAM_CURL_ARGS=()
 
     if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_ALLOWED_USER_ID}" ]; then
         if echo "${TELEGRAM_BOT_TOKEN}" | grep -qE '^[0-9]{8,10}:[A-Za-z0-9_-]{35,}$'; then
+            local api_base_url="${TG_API_BASE_URL:-https://api.telegram.org}"
+            if ! echo "${api_base_url}" | grep -qE '^https?://'; then
+                api_base_url="https://${api_base_url}"
+            fi
+            api_base_url="${api_base_url%/}"
+
             TELEGRAM_ENABLED=true
-            API_BASE="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
+            API_BASE="${api_base_url}/bot${TELEGRAM_BOT_TOKEN}"
+
             # 构建代理参数 (如 TG_PROXY="socks5://user:pass@host:port")
             if [ -n "${TG_PROXY}" ]; then
-                TELEGRAM_PROXY_ARG="-x ${TG_PROXY}"
+                TELEGRAM_CURL_ARGS+=("-x" "${TG_PROXY}")
             fi
-            log INFO "Telegram 通知已启用"
+
+            if [ -n "${TG_API_PROXY_SECRET}" ]; then
+                TELEGRAM_CURL_ARGS+=("-H" "X-TG-Proxy-Secret: ${TG_API_PROXY_SECRET}")
+            fi
+
+            log INFO "Telegram 通知已启用 - API: ${api_base_url}"
         else
             log WARN "Telegram Bot Token 格式不合法，跳过 Telegram 功能"
         fi
@@ -1723,7 +1907,7 @@ main_loop() {
     setup_telegram
 
     if [ "${TELEGRAM_ENABLED}" = true ]; then
-        LAST_UPDATE_ID=0
+        init_telegram_offset
     fi
 
     # 初始化循环变量
@@ -1731,7 +1915,11 @@ main_loop() {
     CACHED_RX=""
     CACHED_TX=""
 
-    log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s"
+    if [ -n "${RATIO_THRESHOLD}" ]; then
+        log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s, 目标比例: ${RATIO_THRESHOLD} (固定)"
+    else
+        log INFO "主循环启动 - 网卡: ${INTERFACE}, 结算日: ${RESET_DAY}, 检查间隔: ${CHECK_INTERVAL}s, 目标比例: 动态"
+    fi
 
     while true; do
         local now
@@ -1748,13 +1936,17 @@ main_loop() {
             elif [ "${ratio}" = "999999" ]; then
                 # TX 为 0，RX > 0，不触发平衡但记录
                 log INFO "流量比例: 极大值 (TX=0)，监控中"
-            elif awk "BEGIN {exit !(${ratio} <= 2.0)}"; then
-                if ! is_curl_running; then
-                    log INFO "流量比例 ${ratio} <= 2.0，触发流量平衡"
-                    traffic_balance
-                fi
             else
-                log INFO "流量比例 ${ratio} > 2.0，监控中"
+                local threshold
+                threshold=$(get_dynamic_threshold "${CACHED_RX}")
+                if awk "BEGIN {exit !(${ratio} <= ${threshold})}"; then
+                    if ! is_curl_running; then
+                        log INFO "流量比例 ${ratio} <= ${threshold}(目标)，触发流量平衡"
+                        traffic_balance
+                    fi
+                else
+                    log INFO "流量比例 ${ratio} > ${threshold}(目标)，监控中"
+                fi
             fi
 
             last_check="${now}"

@@ -7,7 +7,7 @@
 ## 功能特性
 
 - **流量监控**: 基于 vnstat 的月度 RX/TX 比例计算，支持自定义结算日
-- **自动平衡**: 比例 <= 2 时自动后台下载文件（从 42 个内置 URL 随机选取）
+- **自动平衡**: 比例 <= 目标值时触发下载，目标值默认动态计算（低流量高比例，高流量低比例），也可配置固定值
 - **Telegram 机器人**: `/traffic` 命令远程查询当前流量状态
 - **跨平台兼容**: Debian/Ubuntu, RHEL/CentOS/Fedora, Alpine, Arch, openSUSE
 - **多架构支持**: amd64, arm64, armv7l, i386
@@ -178,18 +178,58 @@ TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
 TELEGRAM_ALLOWED_USER_ID="123456789"
 RESET_DAY=15
 LIMIT_RATE="1M"
+# 使用 Cloudflare Worker 反代 Telegram Bot API 时填写，不包含 /bot<TOKEN>
+# TG_API_BASE_URL="https://tg-api.example.workers.dev"
+# TG_API_PROXY_SECRET="your-long-random-secret"
 # TG_PROXY="socks5://user:pass@host:port"
 EOF
 ```
 
-### 4. 重启服务
+### 4. 使用 Cloudflare Worker 反代 Telegram API
+
+如果 VPS 部署在中国大陆地区，不建议长期直接使用 SOCKS5 访问 Telegram Bot API。可以把 `api.telegram.org` 反代到 Cloudflare Worker，再让脚本访问 Worker 域名。
+
+1. 在 Cloudflare Workers 新建 Worker，代码使用本仓库的 [`cloudflare-workers/telegram-api-proxy.js`](./cloudflare-workers/telegram-api-proxy.js)
+2. 在 Worker 环境变量/Secret 中配置：
+
+```text
+BOT_TOKENS=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789,9876543210:OtherBotToken123456789012345678901
+PROXY_SECRET=your-long-random-secret
+ALLOWED_METHODS=getUpdates,sendMessage
+RATE_LIMIT_PER_IP=60
+RATE_LIMIT_PER_BOT=240
+MAX_GETUPDATES_TIMEOUT=10
+```
+
+3. 推荐绑定一个 KV 命名空间到 `RATE_KV`，用于跨 Worker 实例限流；不绑定时脚本会退化为单实例内存限流，仍会校验 token 白名单和密钥头，但抗刷能力弱一些。
+4. 在本脚本配置文件中设置 Worker 根地址和同一个密钥：
+
+```bash
+TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+TELEGRAM_ALLOWED_USER_ID="123456789"
+TG_API_BASE_URL="https://tg-api.example.workers.dev"
+TG_API_PROXY_SECRET="your-long-random-secret"
+TG_PROXY=""
+```
+
+`TG_API_BASE_URL` 也可以填写裸域名，例如 `tg-api.example.com`，脚本会自动补全为 `https://tg-api.example.com`。
+
+Worker 防刷策略：
+
+- 只接受 `BOT_TOKENS` 白名单内的 bot token，支持多个 bot token。
+- 要求请求头 `X-TG-Proxy-Secret` 匹配 `PROXY_SECRET` 或 `PROXY_SECRETS`。
+- 默认只允许 `getUpdates` 和 `sendMessage`，可通过 `ALLOWED_METHODS` 扩展。
+- 限制请求体大小，默认 `MAX_BODY_BYTES=1048576`。
+- 按来源 IP 和 bot token 分别限流，默认每分钟 `RATE_LIMIT_PER_IP=60`、`RATE_LIMIT_PER_BOT=240`。
+
+### 5. 重启服务
 
 ```bash
 sudo systemctl restart traffic-balance  # systemd
 sudo rc-service traffic-balance restart   # OpenRC
 ```
 
-### 5. 使用
+### 6. 使用
 
 在 Telegram 向机器人发送 `/traffic`，机器人将返回：
 
@@ -240,6 +280,10 @@ curl下载: 空闲
 # --- Telegram (可选) ---
 TELEGRAM_BOT_TOKEN="1234567890:ABCdef..."
 TELEGRAM_ALLOWED_USER_ID="123456789"
+# Telegram Bot API 根地址，不包含 /bot<TOKEN> (留空则使用 https://api.telegram.org)
+# TG_API_BASE_URL="https://tg-api.example.workers.dev"
+# Telegram API 反代密钥头，配合 Cloudflare Worker 使用
+# TG_API_PROXY_SECRET="your-long-random-secret"
 # Telegram 代理 (留空则直连，支持 socks5:// 或 http://)
 # TG_PROXY="socks5://user:pass@host:port"
 
@@ -255,6 +299,10 @@ LIMIT_RATE="1M"
 # --- curl 超时 (秒) ---
 CONNECT_TIMEOUT=30
 MAX_DOWNLOAD_TIME=7200
+
+# --- 流量平衡目标比例 (留空则动态计算: 低流量→高比例 高流量→低比例) ---
+# 设置固定值则关闭动态，如 RATIO_THRESHOLD="4.0"
+RATIO_THRESHOLD=""
 
 # --- 流量检查间隔 (秒) ---
 CHECK_INTERVAL=60
@@ -276,12 +324,19 @@ TG_POLL_INTERVAL=5
 
 ### 流量平衡触发条件
 
-- `ratio <= 2.0` 且 `ratio != -1`（有效数据）
+- 动态阈值（默认）：根据当前月度 RX 总量自动调整目标比例
+  - RX < 30GB → 目标 5.0（低流量，便宜，激进伪装）
+  - RX 30-80GB → 目标 4.0
+  - RX 80-150GB → 目标 3.5
+  - RX 150-300GB → 目标 3.0
+  - RX 300-600GB → 目标 2.8
+  - RX >= 600GB → 目标 2.5（高流量，控制带宽成本）
+- 固定阈值：配置文件中设置 `RATIO_THRESHOLD="4.0"` 可关闭动态计算
 - 当前没有 curl 下载进程在运行
 
 ### 平衡下载
 
-从 42 个内置 URL 中随机选取一个，后台启动 curl 下载。支持全球多个测速服务器，覆盖亚洲、欧洲、北美等地区。
+从 50 个内置 URL 中随机选取一个，后台启动 curl 下载。URL 模拟 Debian 运维场景：系统镜像下载、内核源码拉取、开源软件包更新、容器运行时安装等，所有源均中国大陆可达。
 
 ---
 
@@ -365,7 +420,7 @@ A: 取决于你的限速（默认 1MB/s）和 `MAX_DOWNLOAD_TIME`（默认 7200 
 A: 不可以，脚本使用 PID 文件锁确保单实例运行。
 
 **Q: 如何修改下载 URL？**
-A: 直接编辑脚本中的 `DOWNLOAD_URLS` 数组。URL 顺序不可改变。
+A: 直接编辑脚本中的 `DOWNLOAD_URLS` 数组。
 
 **Q: Ctrl+C 无法终止 curl 下载？**
 A: 已修复，使用 `nohup curl &` 确保子进程可被正确终止。
